@@ -102,11 +102,20 @@ jobs:
           NOTES: ${{ steps.meta.outputs.NOTES }}
           APK_FILE: ${{ steps.meta.outputs.APK_FILE }}
         run: |
-          echo "Publishing Release ${TAG} to Xposed-Modules-Repo/io.github.marukon.imeauto..."
-          gh release create "${TAG}" "${APK_FILE}#ImeAutoSwitcher-release.apk" \
-            --repo "Xposed-Modules-Repo/io.github.marukon.imeauto" \
-            --title "${TITLE}" \
-            --notes "${NOTES}"
+          echo "Checking release ${TAG} on Xposed-Modules-Repo/io.github.marukon.imeauto..."
+          TARGET_REPO="Xposed-Modules-Repo/io.github.marukon.imeauto"
+          if gh release view "${TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists. Uploading/overwriting asset with --clobber..."
+            gh release upload "${TAG}" "${APK_FILE}#ImeAutoSwitcher-release.apk" \
+              --repo "${TARGET_REPO}" \
+              --clobber
+          else
+            echo "Creating new release ${TAG}..."
+            gh release create "${TAG}" "${APK_FILE}#ImeAutoSwitcher-release.apk" \
+              --repo "${TARGET_REPO}" \
+              --title "${TITLE}" \
+              --notes "${NOTES}"
+          fi
 
       - name: Clean up Keystore and Build Artifacts
         if: always()
