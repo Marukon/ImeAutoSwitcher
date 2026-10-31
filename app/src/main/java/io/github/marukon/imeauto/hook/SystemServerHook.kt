@@ -74,12 +74,16 @@ object SystemServerHook {
 
     private val knownImePackages = ConcurrentHashMap.newKeySet<String>()
     private val nonImePackages = ConcurrentHashMap.newKeySet<String>()
+    private val verifiedImeCache = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var currentForegroundPackage: String? = null
 
     @Volatile
     private var currentUserId = 0
+
+    @Volatile
+    private var customImeActiveUserId: Int? = null
 
     @Volatile
     private var lastTargetIme: String? = null
@@ -361,7 +365,7 @@ object SystemServerHook {
                                             try {
                                                 val resolution = resolveAppRule(pkg)
                                                 if (resolution is RuleResolution.TargetCustom) {
-                                                    verifyAndEnforceIme(resolution.imeId, "${targetClass.simpleName}.${m.name}")
+                                                    verifyAndEnforceIme(resolution.imeId, "${targetClass.simpleName}.${m.name}", currentUserId)
                                                 }
                                             } catch (t: Throwable) {
                                                 HookUtils.logE("Recheck error in ${targetClass.simpleName}.${m.name}", t)
@@ -449,7 +453,9 @@ object SystemServerHook {
                                     Settings.Secure.DEFAULT_INPUT_METHOD,
                                     targetUser
                                 )
-                                if (!currentSysIme.isNullOrEmpty() && isValidImeId(currentSysIme) && currentSysIme != defaultImeId) {
+                                val currentRule = resolveAppRule(currentForegroundPackage)
+                                val isCurrentTargetIme = (currentRule as? RuleResolution.TargetCustom)?.imeId == currentSysIme
+                                if (!currentSysIme.isNullOrEmpty() && isValidImeId(currentSysIme) && currentSysIme != defaultImeId && !isCurrentTargetIme) {
                                     HookUtils.log("External default IME change detected: $defaultImeId -> $currentSysIme")
                                     defaultImeId = currentSysIme
                                 }
@@ -482,6 +488,8 @@ object SystemServerHook {
                                 HookUtils.log("User switched to $newUserId, resetting state...")
                                 currentUserId = newUserId
                                 isCustomImeActive = false
+                                customImeActiveUserId = null
+                                verifiedImeCache.clear()
                                 currentForegroundPackage = null
                                 defaultImeId = ""
                                 switchExecutor.execute { ensureConfigAndReceiver() }
@@ -520,14 +528,20 @@ object SystemServerHook {
 
     fun isImeInstalledAndEnabled(imeId: String): Boolean {
         if (!isValidImeId(imeId)) return false
+        if (verifiedImeCache.contains(imeId)) return true
         val slashIndex = imeId.indexOf('/')
         if (slashIndex <= 0) return false
         val pkg = imeId.substring(0, slashIndex)
         val ctx = systemContext ?: HookUtils.getSystemContext() ?: return true
         return try {
             val intent = Intent("android.view.InputMethod").setPackage(pkg)
-            val services = ctx.packageManager.queryIntentServices(intent, android.content.pm.PackageManager.MATCH_ALL)
-            services.isNotEmpty()
+            val services = ctx.packageManager.queryIntentServices(intent, 0)
+            if (services.isNotEmpty()) {
+                verifiedImeCache.add(imeId)
+                true
+            } else {
+                false
+            }
         } catch (t: Throwable) {
             true
         }
@@ -750,8 +764,8 @@ object SystemServerHook {
 
         switchExecutor.execute {
             try {
-                if (!force && packageName != currentForegroundPackage) {
-                    HookUtils.log("Discarding stale foreground change for $packageName, current is $currentForegroundPackage")
+                if (!force && (packageName != currentForegroundPackage || userId != currentUserId)) {
+                    HookUtils.log("Discarding stale foreground change for $packageName (user=$userId), current is $currentForegroundPackage (user=$currentUserId)")
                     return@execute
                 }
 
@@ -766,27 +780,43 @@ object SystemServerHook {
                 when (val resolution = resolveAppRule(packageName)) {
                     is RuleResolution.TargetCustom -> {
                         val customIme = resolution.imeId
-                        val isDifferentFromDefault = isValidImeId(defaultImeId) && customIme != defaultImeId
-                        HookUtils.log("Foreground [$packageName] has custom rule: $customIme (differentFromDefault=$isDifferentFromDefault)")
-                        applyImeSwitch(customIme, packageName)
-                        isCustomImeActive = isDifferentFromDefault
+                        // If defaultImeId is empty, try loading current system default once
+                        if (defaultImeId.isEmpty()) {
+                            val curSys = HookUtils.getSecureStringForUser(
+                                systemContext?.contentResolver ?: return@execute,
+                                Settings.Secure.DEFAULT_INPUT_METHOD,
+                                userId
+                            )
+                            if (!curSys.isNullOrEmpty() && isValidImeId(curSys)) {
+                                defaultImeId = curSys
+                            }
+                        }
+                        val isDifferentFromDefault = customIme != defaultImeId
+                        val switched = applyImeSwitch(customIme, packageName, userId)
+                        if (switched) {
+                            isCustomImeActive = isDifferentFromDefault
+                            customImeActiveUserId = if (isDifferentFromDefault) userId else null
+                        }
+                        HookUtils.log("Foreground [$packageName] (user=$userId) custom rule applied: $customIme (switched=$switched, different=$isDifferentFromDefault)")
                     }
                     is RuleResolution.KeepCurrent -> {
                         // User explicitly requested to keep current IME (or unconfigured IME app).
                         // Strictly leave IME untouched, and preserve isCustomImeActive!
-                        HookUtils.log("Foreground [$packageName] is KeepCurrent, leaving IME unchanged (isCustomImeActive=$isCustomImeActive)")
+                        HookUtils.log("Foreground [$packageName] (user=$userId) is KeepCurrent, leaving IME unchanged (isCustomImeActive=$isCustomImeActive)")
                     }
                     is RuleResolution.Unmodified -> {
                         if (isCustomImeActive) {
                             // User exited a modified app whose IME differed from default: perform a single fallback
+                            val restoreUser = customImeActiveUserId ?: userId
                             if (isValidImeId(defaultImeId)) {
-                                HookUtils.log("Exited modified app, restoring default IME [$defaultImeId] for [$packageName]")
-                                applyImeSwitch(defaultImeId, "RestoreAfter:$packageName")
+                                HookUtils.log("Exited modified app, restoring default IME [$defaultImeId] for user $restoreUser (target: [$packageName])")
+                                applyImeSwitch(defaultImeId, "RestoreAfter:$packageName", restoreUser)
                             }
                             isCustomImeActive = false
+                            customImeActiveUserId = null
                         } else {
                             // System is in normal state and app has no custom rule: zero injection!
-                            HookUtils.log("Foreground [$packageName] is unmodified, skipping injection")
+                            HookUtils.log("Foreground [$packageName] (user=$userId) is unmodified, skipping injection")
                         }
                     }
                 }
@@ -847,19 +877,18 @@ object SystemServerHook {
         }
     }
 
-    private fun applyImeSwitch(targetIme: String, triggerPkg: String) {
+    private fun applyImeSwitch(targetIme: String, triggerPkg: String, targetUser: Int = currentUserId): Boolean {
         if (!isValidImeId(targetIme)) {
             HookUtils.log("Refusing to apply invalid IME ID: '$targetIme' for [$triggerPkg]")
-            return
+            return false
         }
 
         if (!isImeInstalledAndEnabled(targetIme)) {
             HookUtils.log("Target IME [$targetIme] is not installed or enabled, skipping switch for [$triggerPkg]")
-            return
+            return false
         }
 
-        val ctx = systemContext ?: HookUtils.getSystemContext()?.also { systemContext = it } ?: return
-        val targetUser = if (currentUserId != 0) currentUserId else HookUtils.getCurrentUserId()
+        val ctx = systemContext ?: HookUtils.getSystemContext()?.also { systemContext = it } ?: return false
 
         val token = android.os.Binder.clearCallingIdentity()
         try {
@@ -875,7 +904,7 @@ object SystemServerHook {
 
             if (!isCurrentCorrupted && targetIme == currentIme) {
                 lastTargetIme = targetIme
-                return
+                return true
             }
 
             HookUtils.log("Switching IME for [$triggerPkg] (user=$targetUser): current=$currentIme -> target=$targetIme")
@@ -890,6 +919,7 @@ object SystemServerHook {
             lastTargetIme = targetIme
         } catch (t: Throwable) {
             HookUtils.logE("Failed to switch IME in Settings.Secure", t)
+            return false
         } finally {
             android.os.Binder.restoreCallingIdentity(token)
         }
@@ -898,12 +928,13 @@ object SystemServerHook {
         if (aggressiveRecheck) {
             pendingVerificationTask?.cancel(false)
             pendingVerificationTask = switchExecutor.schedule({
-                verifyAndEnforceIme(targetIme, "DelayedVerification")
+                verifyAndEnforceIme(targetIme, "DelayedVerification", targetUser)
             }, 250, TimeUnit.MILLISECONDS)
         }
+        return true
     }
 
-    private fun verifyAndEnforceIme(expectedIme: String, source: String) {
+    private fun verifyAndEnforceIme(expectedIme: String, source: String, targetUser: Int = currentUserId) {
         if (!isValidImeId(expectedIme)) return
         if (!isImeInstalledAndEnabled(expectedIme)) {
             HookUtils.log("Expected IME [$expectedIme] is no longer installed/enabled, skipping enforcement")
@@ -914,7 +945,6 @@ object SystemServerHook {
             return
         }
         val ctx = systemContext ?: HookUtils.getSystemContext()?.also { systemContext = it } ?: return
-        val targetUser = if (currentUserId != 0) currentUserId else HookUtils.getCurrentUserId()
 
         val token = android.os.Binder.clearCallingIdentity()
         try {

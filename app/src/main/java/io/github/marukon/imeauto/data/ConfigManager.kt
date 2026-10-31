@@ -317,11 +317,18 @@ object ConfigManager {
             Log.w("ConfigManager", "Broadcast deferred: ${t.message}")
         }
 
-        // 3. Root background sync (queued sequentially, atomic write & SELinux restorecon)
+        // 3. Root background sync (queued sequentially, atomic write, pipe-drain & SELinux restorecon)
         rootSyncExecutor.execute {
+            var proc: Process? = null
             try {
                 val b64 = Base64.encodeToString(fullJson.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
-                val proc = Runtime.getRuntime().exec("su")
+                proc = Runtime.getRuntime().exec("su")
+                // Drain stdout and stderr to prevent pipe buffer exhaustion deadlocks
+                val stdoutDrain = Thread { try { proc.inputStream.readBytes() } catch (ignored: Throwable) {} }
+                val stderrDrain = Thread { try { proc.errorStream.readBytes() } catch (ignored: Throwable) {} }
+                stdoutDrain.start()
+                stderrDrain.start()
+
                 proc.outputStream.bufferedWriter().use { writer ->
                     writer.write("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS\n")
                     writer.write("settings put global $SETTINGS_CONFIG_KEY \"$(echo '$b64' | base64 -d)\"\n")
@@ -331,8 +338,13 @@ object ConfigManager {
                     writer.write("exit\n")
                     writer.flush()
                 }
-                proc.waitFor()
-            } catch (ignored: Throwable) {}
+                val finished = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                if (!finished) {
+                    proc.destroyForcibly()
+                }
+            } catch (ignored: Throwable) {
+                proc?.destroyForcibly()
+            }
         }
     }
 }
