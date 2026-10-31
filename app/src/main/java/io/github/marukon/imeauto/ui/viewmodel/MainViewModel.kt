@@ -128,7 +128,13 @@ class MainViewModel : ViewModel() {
                 filter == "USER" -> !app.isSystem && !app.isImeApp
                 filter == "SYSTEM" -> app.isSystem && !app.isImeApp
                 filter == "IME_APPS" -> app.isImeApp
-                filter == "CONFIGURED" -> app.assignedImeId != null
+                filter == "CONFIGURED" -> {
+                    if (app.isImeApp) {
+                        app.assignedImeId != null && app.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
+                    } else {
+                        app.assignedImeId != null
+                    }
+                }
                 filter == "GROUPED" -> app.assignedImeId?.startsWith(ConfigManager.PREFIX_GROUP) == true
                 filter.startsWith("GROUP:") -> {
                     val gid = filter.removePrefix("GROUP:")
