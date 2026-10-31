@@ -275,20 +275,16 @@ object ConfigManager {
             Log.w("ConfigManager", "Settings.Global direct write deferred: ${t.message}")
         }
 
-        // 2. Broadcasts
+        // 2. Targeted system broadcast
         try {
-            val intent = Intent(ACTION_SYNC_CONFIG).apply {
+            val systemIntent = Intent(ACTION_SYNC_CONFIG).apply {
+                setPackage("android")
                 putExtra(KEY_GLOBAL_ENABLED, isGlobalEnabled(context))
                 putExtra(KEY_DEFAULT_IME, getDefaultIme(context))
                 putExtra(KEY_AGGRESSIVE_RECHECK, isAggressiveRecheck(context))
                 putExtra(KEY_APP_RULES, getPrefs(context).getString(KEY_APP_RULES, "{}"))
                 putExtra(KEY_GROUPS, json.encodeToString(getGroups(context)))
                 putExtra(SETTINGS_CONFIG_KEY, fullJson)
-            }
-            context.sendBroadcast(intent)
-
-            val systemIntent = Intent(intent).apply {
-                setPackage("android")
             }
             context.sendBroadcast(systemIntent)
         } catch (t: Throwable) {

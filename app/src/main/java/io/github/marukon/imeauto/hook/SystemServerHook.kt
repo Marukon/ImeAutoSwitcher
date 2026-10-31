@@ -18,10 +18,13 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 object SystemServerHook {
 
     private const val ACTIVE_FLAG_KEY = "io_github_marukon_imeauto_active"
+
+    private val isInitStarted = AtomicBoolean(false)
 
     @Volatile
     private var module: XposedModule? = null
@@ -63,8 +66,12 @@ object SystemServerHook {
     @Volatile
     private var aggressiveRecheck = true
 
-    private val appRules = ConcurrentHashMap<String, String>()
-    private val groupsMap = ConcurrentHashMap<String, String>()
+    @Volatile
+    private var appRules: Map<String, String> = emptyMap()
+
+    @Volatile
+    private var groupsMap: Map<String, String> = emptyMap()
+
     private val knownImePackages = ConcurrentHashMap.newKeySet<String>()
     private val nonImePackages = ConcurrentHashMap.newKeySet<String>()
 
@@ -80,8 +87,8 @@ object SystemServerHook {
     @Volatile
     private var pendingVerificationTask: java.util.concurrent.ScheduledFuture<*>? = null
 
-    @Synchronized
     fun init(xposedModule: XposedModule, classLoader: ClassLoader) {
+        if (!isInitStarted.compareAndSet(false, true)) return
         module = xposedModule
 
         // 1. Try resolving system context if not already done
@@ -159,7 +166,7 @@ object SystemServerHook {
                             if (ctx != null) {
                                 initSystemContext(ctx)
                             }
-                            mainHandler.post { ensureConfigAndReceiver() }
+                            switchExecutor.execute { ensureConfigAndReceiver() }
                         } catch (t: Throwable) {
                             HookUtils.logE("Failed in onSystemReady intercept", t)
                         }
@@ -290,11 +297,12 @@ object SystemServerHook {
                                     break
                                 }
                             }
-                            if (!isContextInitialized && immsInstance != null) {
+                            val inst = immsInstance
+                            if (!isContextInitialized && inst != null) {
                                 try {
-                                    val ctxField = immsInstance!!.javaClass.getDeclaredField("mContext")
+                                    val ctxField = inst.javaClass.getDeclaredField("mContext")
                                     ctxField.isAccessible = true
-                                    val ctx = ctxField.get(immsInstance) as? Context
+                                    val ctx = ctxField.get(inst) as? Context
                                     if (ctx != null) initSystemContext(ctx)
                                 } catch (ignored: Throwable) {}
                             }
@@ -360,7 +368,6 @@ object SystemServerHook {
         }
     }
 
-    @Synchronized
     private fun initSystemContext(context: Context) {
         if (isContextInitialized) return
         systemContext = context
@@ -375,12 +382,11 @@ object SystemServerHook {
             HookUtils.logE("Failed to write active state to Settings.Global", t)
         }
 
-        // Post retries to allow AMS and PMS to finish starting
-        mainHandler.postDelayed({ ensureConfigAndReceiver() }, 3000)
-        mainHandler.postDelayed({ ensureConfigAndReceiver() }, 8000)
+        // Post retries on background executor to allow AMS and PMS to finish starting without blocking main thread
+        switchExecutor.schedule({ ensureConfigAndReceiver() }, 3000, TimeUnit.MILLISECONDS)
+        switchExecutor.schedule({ ensureConfigAndReceiver() }, 8000, TimeUnit.MILLISECONDS)
     }
 
-    @Synchronized
     private fun ensureConfigAndReceiver() {
         val ctx = systemContext ?: HookUtils.getSystemContext()?.also { systemContext = it } ?: return
 
@@ -462,15 +468,16 @@ object SystemServerHook {
                 else -> null
             }
             if (groupsArr != null) {
-                groupsMap.clear()
+                val newGroups = HashMap<String, String>()
                 for (i in 0 until groupsArr.length()) {
                     val item = groupsArr.getJSONObject(i)
                     val id = item.optString("id")
                     val ime = item.optString("targetImeId")
                     if (id.isNotEmpty()) {
-                        groupsMap[id] = ime
+                        newGroups[id] = ime
                     }
                 }
+                groupsMap = newGroups
                 HookUtils.log("Parsed ${groupsMap.size} groups into groupsMap")
             }
         } catch (e: Throwable) {
@@ -502,8 +509,8 @@ object SystemServerHook {
             HookUtils.log("File read error: ${t.message}")
         }
 
-        // Priority 3: Fallback ContentProvider (always load if groupsMap is empty or appRules is empty)
-        if (groupsMap.isEmpty() || appRules.isEmpty()) {
+        // Priority 3: Fallback ContentProvider (only load if no config was loaded and both are empty)
+        if (!isConfigLoaded && groupsMap.isEmpty() && appRules.isEmpty()) {
             loadConfigFromProvider(context)
         }
 
@@ -530,7 +537,10 @@ object SystemServerHook {
                 isGlobalEnabled = root.optBoolean(ConfigManager.KEY_GLOBAL_ENABLED, true)
             }
             if (root.has(ConfigManager.KEY_DEFAULT_IME)) {
-                defaultImeId = root.optString(ConfigManager.KEY_DEFAULT_IME, "")
+                val ime = root.optString(ConfigManager.KEY_DEFAULT_IME, "")
+                if (isValidImeId(ime)) {
+                    defaultImeId = ime
+                }
             }
             if (root.has(ConfigManager.KEY_AGGRESSIVE_RECHECK)) {
                 aggressiveRecheck = root.optBoolean(ConfigManager.KEY_AGGRESSIVE_RECHECK, true)
@@ -543,10 +553,11 @@ object SystemServerHook {
                     else -> null
                 }
                 if (rulesObj != null) {
-                    appRules.clear()
+                    val newRules = HashMap<String, String>()
                     for (key in rulesObj.keys()) {
-                        appRules[key] = rulesObj.getString(key)
+                        newRules[key] = rulesObj.getString(key)
                     }
+                    appRules = newRules
                 }
             }
             if (root.has(ConfigManager.KEY_GROUPS)) {
@@ -560,6 +571,7 @@ object SystemServerHook {
                     else -> null
                 }
                 if (imeArr != null) {
+                    knownImePackages.clear()
                     for (i in 0 until imeArr.length()) {
                         knownImePackages.add(imeArr.getString(i))
                     }
@@ -586,10 +598,11 @@ object SystemServerHook {
                 val rulesJson = bundle.getString(ConfigManager.KEY_APP_RULES)
                 if (!rulesJson.isNullOrEmpty()) {
                     val obj = JSONObject(rulesJson)
-                    appRules.clear()
+                    val newRules = HashMap<String, String>()
                     for (key in obj.keys()) {
-                        appRules[key] = obj.getString(key)
+                        newRules[key] = obj.getString(key)
                     }
+                    appRules = newRules
                 }
                 val groupsJson = bundle.getString(ConfigManager.KEY_GROUPS)
                 if (!groupsJson.isNullOrEmpty()) {
@@ -616,17 +629,21 @@ object SystemServerHook {
         }
 
         isGlobalEnabled = intent.getBooleanExtra(ConfigManager.KEY_GLOBAL_ENABLED, true)
-        defaultImeId = intent.getStringExtra(ConfigManager.KEY_DEFAULT_IME) ?: ""
+        val imeFromIntent = intent.getStringExtra(ConfigManager.KEY_DEFAULT_IME)
+        if (!imeFromIntent.isNullOrEmpty() && isValidImeId(imeFromIntent)) {
+            defaultImeId = imeFromIntent
+        }
         aggressiveRecheck = intent.getBooleanExtra(ConfigManager.KEY_AGGRESSIVE_RECHECK, true)
 
         val rulesJson = intent.getStringExtra(ConfigManager.KEY_APP_RULES)
         if (!rulesJson.isNullOrEmpty()) {
             try {
                 val obj = JSONObject(rulesJson)
-                appRules.clear()
+                val newRules = HashMap<String, String>()
                 for (key in obj.keys()) {
-                    appRules[key] = obj.getString(key)
+                    newRules[key] = obj.getString(key)
                 }
+                appRules = newRules
                 isConfigLoaded = true
             } catch (e: Exception) {
                 HookUtils.logE("Failed to parse app rules JSON", e)
@@ -656,6 +673,11 @@ object SystemServerHook {
 
         switchExecutor.execute {
             try {
+                if (!force && packageName != currentForegroundPackage) {
+                    HookUtils.log("Discarding stale foreground change for $packageName, current is $currentForegroundPackage")
+                    return@execute
+                }
+
                 if (!isConfigLoaded || !isReceiverRegistered) {
                     ensureConfigAndReceiver()
                 }

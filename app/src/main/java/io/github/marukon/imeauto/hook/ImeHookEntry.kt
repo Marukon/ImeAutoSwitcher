@@ -52,11 +52,11 @@ class ImeHookEntry : XposedModule() {
                     false,
                     param.classLoader
                 )
-                val isModuleActiveMethod = configClass.getDeclaredMethod("isModuleActive")
-                hook(isModuleActiveMethod)
+                val isSelfHookedMethod = configClass.getDeclaredMethod("isSelfHooked")
+                hook(isSelfHookedMethod)
                     .setPriority(XposedInterface.PRIORITY_HIGHEST)
                     .intercept { true }
-                HookUtils.log("Successfully hooked ConfigManager.isModuleActive in self app")
+                HookUtils.log("Successfully hooked ConfigManager.isSelfHooked in self app")
             } catch (t: Throwable) {
                 HookUtils.logE("Failed to hook ConfigManager in self app", t)
             }
