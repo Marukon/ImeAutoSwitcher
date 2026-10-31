@@ -1,0 +1,105 @@
+name: Automated Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v1.0.1)"
+        required: true
+        default: "v1.0.1"
+      release_title:
+        description: "Release title"
+        required: true
+        default: "ImeAutoSwitcher Release"
+      release_notes:
+        description: "Release notes / changelog"
+        required: false
+        default: "Bug fixes and performance improvements."
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "gradle"
+
+      - name: Setup Keystore from Secret
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "${KEYSTORE_BASE64}" | base64 -d > app/release-keystore.jks
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_PATH: "release-keystore.jks"
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Prepare Release Metadata
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+            echo "TITLE=${{ github.event.inputs.release_title }}" >> $GITHUB_OUTPUT
+            echo "NOTES=${{ github.event.inputs.release_notes }}" >> $GITHUB_OUTPUT
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "TAG_NAME=${TAG}" >> $GITHUB_OUTPUT
+            echo "TITLE=ImeAutoSwitcher ${TAG}" >> $GITHUB_OUTPUT
+            echo "NOTES=Release ${TAG} for ImeAutoSwitcher (LSPosed API 102)." >> $GITHUB_OUTPUT
+          fi
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          cp "${APK_PATH}" "./ImeAutoSwitcher-release.apk"
+          echo "APK_FILE=./ImeAutoSwitcher-release.apk" >> $GITHUB_OUTPUT
+
+      - name: Publish Release to LSPosed Distribution Repo
+        env:
+          GH_TOKEN: ${{ secrets.LSP_REPO_TOKEN }}
+          TAG: ${{ steps.meta.outputs.TAG_NAME }}
+          TITLE: ${{ steps.meta.outputs.TITLE }}
+          NOTES: ${{ steps.meta.outputs.NOTES }}
+          APK_FILE: ${{ steps.meta.outputs.APK_FILE }}
+        run: |
+          echo "Publishing Release ${TAG} to Xposed-Modules-Repo/io.github.marukon.imeauto..."
+          gh release create "${TAG}" "${APK_FILE}#ImeAutoSwitcher-release.apk" \
+            --repo "Xposed-Modules-Repo/io.github.marukon.imeauto" \
+            --title "${TITLE}" \
+            --notes "${NOTES}"
+
+      - name: Publish Release to Source Repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.TAG_NAME }}
+          TITLE: ${{ steps.meta.outputs.TITLE }}
+          NOTES: ${{ steps.meta.outputs.NOTES }}
+          APK_FILE: ${{ steps.meta.outputs.APK_FILE }}
+        run: |
+          echo "Publishing Release ${TAG} to source repository..."
+          gh release create "${TAG}" "${APK_FILE}#ImeAutoSwitcher-release.apk" \
+            --repo "${{ github.repository }}" \
+            --title "${TITLE}" \
+            --notes "${NOTES}"
+
+      - name: Clean up Keystore and Build Artifacts
+        if: always()
+        run: |
+          echo "Cleaning up sensitive files and build artifacts..."
+          rm -f app/release-keystore.jks
+          rm -f ./ImeAutoSwitcher-release.apk
+          rm -rf app/build/
+          rm -rf build/
+          rm -rf ~/.gradle/caches/

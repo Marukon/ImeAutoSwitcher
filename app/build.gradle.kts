@@ -31,12 +31,17 @@ android {
         buildConfigField("String", "MODULE_PACKAGE_NAME", "\"$fullPkg\"")
     }
 
+    val signKeystorePath = System.getenv("KEYSTORE_PATH") ?: "keystore.jks"
+    val signStorePassword = System.getenv("KEYSTORE_PASSWORD") ?: "marukon_imeauto_2026"
+    val signKeyAlias = System.getenv("KEY_ALIAS") ?: "imeauto"
+    val signKeyPassword = System.getenv("KEY_PASSWORD") ?: "marukon_imeauto_2026"
+
     signingConfigs {
         create("release") {
-            storeFile = file("keystore.jks")
-            storePassword = "marukon_imeauto_2026"
-            keyAlias = "imeauto"
-            keyPassword = "marukon_imeauto_2026"
+            storeFile = file(signKeystorePath)
+            storePassword = signStorePassword
+            keyAlias = signKeyAlias
+            keyPassword = signKeyPassword
             enableV1Signing = true
             enableV2Signing = true
             enableV3Signing = true
