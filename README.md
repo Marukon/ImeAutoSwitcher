@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/Xposed-Modules-Repo/io.github.marukon.imeauto/releases"><img src="https://img.shields.io/badge/Release-LSPosed%20Repo-blue?style=flat-square&logo=android" alt="Download Release" /></a>
   <a href="https://github.com/libxposed"><img src="https://img.shields.io/badge/LibXposed-API%20102-brightgreen?style=flat-square" alt="LibXposed API 102" /></a>
-  <img src="https://img.shields.io/badge/Android-9.0--16%20(ColorOS%2015)-orange?style=flat-square" alt="Android Compatibility" />
+  <img src="https://img.shields.io/badge/Android-9.0--16%20(ColorOS%2016)-orange?style=flat-square" alt="Android Compatibility" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-lightgrey?style=flat-square" alt="License" /></a>
 </p>
 
@@ -56,7 +56,7 @@
 ### 📱 兼容性与运行环境
 
 - **已实测验证系统**：
-  - **OnePlus 12 (一加 12)**：ColorOS 15 (Android 16，SDK 36) + KernelSU + LSPosed，实测功能完整稳定。
+  - **OnePlus 12 (一加 12)**：ColorOS 16 (Android 16，SDK 36) + KernelSU + LSPosed，实测功能完整稳定。
 - **其他系统说明**：
   - 理论支持 Android 9.0 ~ 16。由于各品牌厂商定制系统（如 HyperOS、OriginOS、One UI 等）底层对系统框架与输入法调度逻辑存在差异，**其他机型与系统请自行测试**。遇到问题欢迎提交 [Issues](https://github.com/Marukon/ImeAutoSwitcher/issues) 并附带系统日志反馈。
 - **环境要求**：
