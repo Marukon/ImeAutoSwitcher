@@ -95,7 +95,12 @@ class MainViewModel : ViewModel() {
         counts.map { (imeId, count) ->
             val label = imes.firstOrNull { it.id == imeId }?.label ?: imeId
             UsedImeFilter(imeId, label, count)
-        }.sortedByDescending { it.count }
+        }.sortedByDescending { it.count }.also { list ->
+            val cur = _selectedFilter.value
+            if (cur.startsWith("IME:") && list.none { "IME:${it.imeId}" == cur }) {
+                _selectedFilter.value = FilterType.ALL
+            }
+        }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val groupFilters: StateFlow<List<GroupFilterItem>> = combine(
@@ -193,13 +198,11 @@ class MainViewModel : ViewModel() {
             val imePackages = AppListLoader.loadAllImePackageNames(context)
             ConfigManager.setKnownImePackages(context, imePackages)
 
-            // If default IME not yet set in config, automatically default to system active IME
-            if (_defaultImeId.value.isEmpty()) {
-                val currentSystemDefault = imes.firstOrNull { it.isDefault }?.id
-                if (currentSystemDefault != null) {
-                    _defaultImeId.value = currentSystemDefault
-                    ConfigManager.setDefaultIme(context, currentSystemDefault)
-                }
+            // If default IME not yet set in config or refers to an uninstalled IME, automatically sync to system active IME
+            val currentSystemDefault = imes.firstOrNull { it.isDefault }?.id
+            if (currentSystemDefault != null && (_defaultImeId.value.isEmpty() || !imes.any { it.id == _defaultImeId.value })) {
+                _defaultImeId.value = currentSystemDefault
+                ConfigManager.setDefaultIme(context, currentSystemDefault)
             }
 
             val appRules = ConfigManager.getAppRules(context)

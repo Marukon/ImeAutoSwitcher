@@ -148,6 +148,30 @@ object HookUtils {
         }
     }
 
+    fun extractUserId(activityRecord: Any?): Int? {
+        if (activityRecord == null) return null
+        return try {
+            val field = findFieldInHierarchy(activityRecord.javaClass, "mUserId")
+            field?.getInt(activityRecord)
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    fun findFieldInHierarchy(clazz: Class<*>, name: String): Field? {
+        var current: Class<*>? = clazz
+        while (current != null && current != Any::class.java) {
+            try {
+                val field = current.getDeclaredField(name)
+                field.isAccessible = true
+                return field
+            } catch (ignored: NoSuchFieldException) {
+                current = current.superclass
+            }
+        }
+        return null
+    }
+
     fun findFirstMethodNamed(clazz: Class<*>, name: String): Method? {
         for (m in clazz.declaredMethods) {
             if (m.name == name) {

@@ -11,6 +11,12 @@ class ConfigContentProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+        val callingUid = android.os.Binder.getCallingUid()
+        val myUid = android.os.Process.myUid()
+        if (callingUid != android.os.Process.SYSTEM_UID && callingUid != myUid && callingUid != 0) {
+            throw SecurityException("Unauthorized UID $callingUid attempting to access ConfigContentProvider")
+        }
+
         val ctx = context ?: return null
         return when (method) {
             "getConfig" -> {
