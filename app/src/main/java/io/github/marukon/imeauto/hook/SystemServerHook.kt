@@ -515,7 +515,7 @@ object SystemServerHook {
                     Settings.Secure.DEFAULT_INPUT_METHOD,
                     HookUtils.getCurrentUserId()
                 )
-                if (isValidImeId(currentSysIme)) {
+                if (!currentSysIme.isNullOrEmpty() && isValidImeId(currentSysIme)) {
                     defaultImeId = currentSysIme
                     HookUtils.log("Auto-cached current system IME as fallback default: $defaultImeId")
                 }
@@ -710,7 +710,7 @@ object SystemServerHook {
                 if (groupIme == ConfigManager.RULE_KEEP_CURRENT) {
                     return RuleResolution.KeepCurrent
                 }
-                if (isValidImeId(groupIme)) {
+                if (!groupIme.isNullOrEmpty() && isValidImeId(groupIme)) {
                     return RuleResolution.TargetCustom(groupIme)
                 }
                 return RuleResolution.Unmodified
