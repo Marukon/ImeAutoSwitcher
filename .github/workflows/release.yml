@@ -6,18 +6,18 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: "Release tag (e.g. v1.0.1)"
-        required: true
-        default: "v1.0.1"
+      tag_override:
+        description: "Custom tag override (Leave empty to auto-read from app/build.gradle.kts)"
+        required: false
+        default: ""
       release_title:
-        description: "Release title"
-        required: true
-        default: "ImeAutoSwitcher Release"
+        description: "Release title (Leave empty for auto-generated title)"
+        required: false
+        default: ""
       release_notes:
         description: "Release notes / changelog"
         required: false
-        default: "Bug fixes and performance improvements."
+        default: ""
 
 jobs:
   build-and-release:
@@ -51,19 +51,45 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
-      - name: Prepare Release Metadata
+      - name: Extract Version & Prepare Release Metadata
         id: meta
         run: |
+          VERSION_NAME=$(grep -E '^\s*versionName\s*=\s*' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '[:space:]')
+          VERSION_CODE=$(grep -E '^\s*versionCode\s*=\s*' app/build.gradle.kts | sed -E 's/.*=\s*([0-9]+).*/\1/' | tr -d '[:space:]')
+          
+          echo "Extracted from code: versionName=$VERSION_NAME, versionCode=$VERSION_CODE"
+          AUTO_TAG="v${VERSION_NAME}"
+          
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-            echo "TITLE=${{ github.event.inputs.release_title }}" >> $GITHUB_OUTPUT
-            echo "NOTES=${{ github.event.inputs.release_notes }}" >> $GITHUB_OUTPUT
-          else
+            TAG="${{ github.event.inputs.tag_override }}"
+            if [ -z "$TAG" ]; then
+              TAG="$AUTO_TAG"
+            fi
+            
+            TITLE="${{ github.event.inputs.release_title }}"
+            if [ -z "$TITLE" ]; then
+              TITLE="ImeAutoSwitcher ${TAG}"
+            fi
+            
+            NOTES="${{ github.event.inputs.release_notes }}"
+            if [ -z "$NOTES" ]; then
+              NOTES="Release ${TAG} (code ${VERSION_CODE}) for ImeAutoSwitcher (LSPosed API 102)."
+            fi
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            echo "TAG_NAME=${TAG}" >> $GITHUB_OUTPUT
-            echo "TITLE=ImeAutoSwitcher ${TAG}" >> $GITHUB_OUTPUT
-            echo "NOTES=Release ${TAG} for ImeAutoSwitcher (LSPosed API 102)." >> $GITHUB_OUTPUT
+            TITLE="ImeAutoSwitcher ${TAG}"
+            NOTES="Release ${TAG} (code ${VERSION_CODE}) for ImeAutoSwitcher (LSPosed API 102)."
+          else
+            TAG="$AUTO_TAG"
+            TITLE="ImeAutoSwitcher ${TAG}"
+            NOTES="Release ${TAG} (code ${VERSION_CODE}) for ImeAutoSwitcher (LSPosed API 102)."
           fi
+          
+          echo "Release target: TAG=${TAG}, TITLE=${TITLE}"
+          echo "TAG_NAME=${TAG}" >> $GITHUB_OUTPUT
+          echo "TITLE=${TITLE}" >> $GITHUB_OUTPUT
+          echo "NOTES=${NOTES}" >> $GITHUB_OUTPUT
+          
           APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
           cp "${APK_PATH}" "./ImeAutoSwitcher-release.apk"
           echo "APK_FILE=./ImeAutoSwitcher-release.apk" >> $GITHUB_OUTPUT
@@ -79,20 +105,6 @@ jobs:
           echo "Publishing Release ${TAG} to Xposed-Modules-Repo/io.github.marukon.imeauto..."
           gh release create "${TAG}" "${APK_FILE}#ImeAutoSwitcher-release.apk" \
             --repo "Xposed-Modules-Repo/io.github.marukon.imeauto" \
-            --title "${TITLE}" \
-            --notes "${NOTES}"
-
-      - name: Publish Release to Source Repo
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.meta.outputs.TAG_NAME }}
-          TITLE: ${{ steps.meta.outputs.TITLE }}
-          NOTES: ${{ steps.meta.outputs.NOTES }}
-          APK_FILE: ${{ steps.meta.outputs.APK_FILE }}
-        run: |
-          echo "Publishing Release ${TAG} to source repository..."
-          gh release create "${TAG}" "${APK_FILE}#ImeAutoSwitcher-release.apk" \
-            --repo "${{ github.repository }}" \
             --title "${TITLE}" \
             --notes "${NOTES}"
 
