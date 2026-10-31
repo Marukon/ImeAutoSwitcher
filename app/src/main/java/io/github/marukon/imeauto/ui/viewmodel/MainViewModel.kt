@@ -98,7 +98,7 @@ class MainViewModel : ViewModel() {
         }.sortedByDescending { it.count }.also { list ->
             val cur = _selectedFilter.value
             if (cur.startsWith("IME:") && list.none { "IME:${it.imeId}" == cur }) {
-                _selectedFilter.value = FilterType.ALL
+                _selectedFilter.value = "ALL"
             }
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -266,6 +266,19 @@ class MainViewModel : ViewModel() {
         _isPickingDefaultIme.value = picking
     }
 
+    private val appListCollator = java.text.Collator.getInstance(java.util.Locale.getDefault()).apply {
+        strength = java.text.Collator.PRIMARY
+    }
+
+    private fun sortAppList(list: List<AppItem>): List<AppItem> = list.sortedWith(
+        compareByDescending<AppItem> {
+            it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
+        }.thenComparator { a, b ->
+            val comp = appListCollator.compare(a.name, b.name)
+            if (comp != 0) comp else a.packageName.compareTo(b.packageName)
+        }
+    )
+
     fun updateAppIme(context: Context, packageName: String, imeId: String?) {
         ConfigManager.setAppRule(context, packageName, imeId)
 
@@ -277,11 +290,7 @@ class MainViewModel : ViewModel() {
                 app
             }
         }
-        _allApps.value = updated.sortedWith(
-            compareByDescending<AppItem> {
-                it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
-            }.thenBy { it.name.lowercase() }
-        )
+        _allApps.value = sortAppList(updated)
         _selectedAppForImePick.value = null
     }
 
@@ -304,13 +313,10 @@ class MainViewModel : ViewModel() {
 
         // Re-evaluate assigned rules for affected apps
         val appRules = ConfigManager.getAppRules(context)
-        _allApps.value = _allApps.value.map { app ->
+        val updated = _allApps.value.map { app ->
             app.copy(assignedImeId = appRules[app.packageName])
-        }.sortedWith(
-            compareByDescending<AppItem> {
-                it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
-            }.thenBy { it.name.lowercase() }
-        )
+        }
+        _allApps.value = sortAppList(updated)
     }
 
     fun exportConfig(context: Context): String {
