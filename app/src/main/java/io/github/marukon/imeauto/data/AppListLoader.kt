@@ -42,7 +42,7 @@ object AppListLoader {
         val fromQuery = try {
             val intent = Intent(InputMethod.SERVICE_INTERFACE)
             pm.queryIntentServices(intent, PackageManager.MATCH_ALL or PackageManager.GET_META_DATA)
-                .map { it.serviceInfo.packageName }
+                .mapNotNull { it.serviceInfo?.packageName }
                 .toSet()
         } catch (t: Throwable) {
             emptySet()
