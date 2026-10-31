@@ -23,6 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 object SystemServerHook {
 
     private const val ACTIVE_FLAG_KEY = "io_github_marukon_imeauto_active"
+    private const val ACTION_USER_SWITCHED = "android.intent.action.USER_SWITCHED"
+    private const val EXTRA_USER_HANDLE = "android.intent.extra.user_handle"
 
     private val isInitStarted = AtomicBoolean(false)
 
@@ -33,7 +35,9 @@ object SystemServerHook {
     @Volatile
     private var immsInstance: Any? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val switchExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+    private val switchExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor().apply {
+        (this as? java.util.concurrent.ScheduledThreadPoolExecutor)?.removeOnCancelPolicy = true
+    }
 
     @Volatile
     private var isForegroundHookInstalled = false
@@ -49,6 +53,9 @@ object SystemServerHook {
 
     @Volatile
     private var isReceiverRegistered = false
+
+    @Volatile
+    private var isPackageReceiverRegistered = false
 
     @Volatile
     private var isSettingsObserverRegistered = false
@@ -91,8 +98,7 @@ object SystemServerHook {
     @Volatile
     private var isCustomImeActive = false
 
-    @Volatile
-    private var lastFocusCheckTime = 0L
+    private val lastFocusCheckTime = java.util.concurrent.atomic.AtomicLong(0L)
 
     @Volatile
     private var pendingVerificationTask: java.util.concurrent.ScheduledFuture<*>? = null
@@ -357,8 +363,8 @@ object SystemServerHook {
                         try {
                             if (isGlobalEnabled && aggressiveRecheck && isCustomImeActive) {
                                 val now = android.os.SystemClock.uptimeMillis()
-                                if (now - lastFocusCheckTime > 150) {
-                                    lastFocusCheckTime = now
+                                val last = lastFocusCheckTime.get()
+                                if (now - last > 150 && lastFocusCheckTime.compareAndSet(last, now)) {
                                     val pkg = currentForegroundPackage
                                     if (!pkg.isNullOrEmpty()) {
                                         switchExecutor.execute {
@@ -418,6 +424,10 @@ object SystemServerHook {
         if (!isReceiverRegistered) {
             registerConfigReceiver(ctx)
         }
+
+        if (!isPackageReceiverRegistered) {
+            registerPackageReceiver(ctx)
+        }
     }
 
     private fun registerSettingsObserver(context: Context) {
@@ -476,15 +486,15 @@ object SystemServerHook {
         try {
             val filter = IntentFilter().apply {
                 addAction(ConfigManager.ACTION_SYNC_CONFIG)
-                addAction(Intent.ACTION_USER_SWITCHED)
+                addAction(ACTION_USER_SWITCHED)
             }
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
                     if (intent == null) return
                     try {
                         when (intent.action) {
-                            Intent.ACTION_USER_SWITCHED -> {
-                                val newUserId = intent.getIntExtra(Intent.EXTRA_USER_HANDLE, 0)
+                            ACTION_USER_SWITCHED -> {
+                                val newUserId = intent.getIntExtra(EXTRA_USER_HANDLE, 0)
                                 HookUtils.log("User switched to $newUserId, resetting state...")
                                 currentUserId = newUserId
                                 isCustomImeActive = false
@@ -518,6 +528,36 @@ object SystemServerHook {
         }
     }
 
+    private fun registerPackageReceiver(context: Context) {
+        if (isPackageReceiverRegistered) return
+        try {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_REMOVED)
+                addAction(Intent.ACTION_PACKAGE_CHANGED)
+                addAction(Intent.ACTION_PACKAGE_REPLACED)
+                addDataScheme("package")
+            }
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) {
+                    val pkg = intent?.data?.schemeSpecificPart ?: return
+                    verifiedImeCache.removeIf { it.startsWith("$pkg/") }
+                    knownImePackages.remove(pkg)
+                    nonImePackages.remove(pkg)
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                context.registerReceiver(receiver, filter)
+            }
+            isPackageReceiverRegistered = true
+            HookUtils.log("Registered package lifecycle receiver in system_server")
+        } catch (t: Throwable) {
+            HookUtils.log("registerPackageReceiver deferred: ${t.message}")
+        }
+    }
+
     fun isValidImeId(id: String?): Boolean {
         if (id.isNullOrEmpty()) return false
         if (id == ConfigManager.RULE_KEEP_CURRENT) return false
@@ -535,7 +575,7 @@ object SystemServerHook {
         val ctx = systemContext ?: HookUtils.getSystemContext() ?: return true
         return try {
             val intent = Intent("android.view.InputMethod").setPackage(pkg)
-            val services = ctx.packageManager.queryIntentServices(intent, 0)
+            val services = ctx.packageManager.queryIntentServices(intent, android.content.pm.PackageManager.MATCH_ALL)
             if (services.isNotEmpty()) {
                 verifiedImeCache.add(imeId)
                 true
@@ -669,7 +709,7 @@ object SystemServerHook {
             }
             isConfigLoaded = true
             HookUtils.log("Config successfully applied from [$source]: ${appRules.size} rules, ${groupsMap.size} groups, default=$defaultImeId, enabled=$isGlobalEnabled")
-            currentForegroundPackage?.let { handleForegroundAppChanged(it, force = true) }
+            currentForegroundPackage?.let { handleForegroundAppChanged(it, userId = currentUserId, force = true) }
             true
         } catch (e: Throwable) {
             HookUtils.logE("Failed to parse config from [$source]", e)
@@ -746,7 +786,7 @@ object SystemServerHook {
         }
 
         HookUtils.log("Config updated via broadcast: ${appRules.size} rules, ${groupsMap.size} groups, default=$defaultImeId, enabled=$isGlobalEnabled")
-        currentForegroundPackage?.let { handleForegroundAppChanged(it, force = true) }
+        currentForegroundPackage?.let { handleForegroundAppChanged(it, userId = currentUserId, force = true) }
     }
 
     private sealed interface RuleResolution {
@@ -791,6 +831,15 @@ object SystemServerHook {
                                 defaultImeId = curSys
                             }
                         }
+
+                        // If custom IME was active in another user profile, restore that profile to default IME first
+                        if (isCustomImeActive && customImeActiveUserId != null && customImeActiveUserId != userId) {
+                            if (isValidImeId(defaultImeId)) {
+                                HookUtils.log("Cross-user custom switch: restoring previous user $customImeActiveUserId to default IME [$defaultImeId]")
+                                applyImeSwitch(defaultImeId, "CrossUserRestore:$packageName", customImeActiveUserId!!)
+                            }
+                        }
+
                         val isDifferentFromDefault = customIme != defaultImeId
                         val switched = applyImeSwitch(customIme, packageName, userId)
                         if (switched) {

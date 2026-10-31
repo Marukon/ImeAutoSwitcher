@@ -176,7 +176,7 @@ object ConfigManager {
         notifyHook(context)
     }
 
-    fun addGroup(context: Context, name: String, targetImeId: String): ImeGroup {
+    fun addGroup(context: Context, name: String, targetImeId: String): ImeGroup = synchronized(configLock) {
         val current = getGroups(context).toMutableList()
         val newGroup = ImeGroup(
             id = UUID.randomUUID().toString().substring(0, 8),
@@ -184,36 +184,32 @@ object ConfigManager {
             targetImeId = targetImeId
         )
         current.add(newGroup)
-        saveGroups(context, current)
-        return newGroup
+        val encoded = json.encodeToString(current)
+        getPrefs(context).edit().putString(KEY_GROUPS, encoded).apply()
+        notifyHook(context)
+        newGroup
     }
 
-    fun updateGroup(context: Context, updated: ImeGroup) {
+    fun updateGroup(context: Context, updated: ImeGroup) = synchronized(configLock) {
         val current = getGroups(context).map {
             if (it.id == updated.id) updated else it
         }
-        saveGroups(context, current)
+        val encoded = json.encodeToString(current)
+        getPrefs(context).edit().putString(KEY_GROUPS, encoded).apply()
+        notifyHook(context)
     }
 
-    fun deleteGroup(context: Context, groupId: String) {
+    fun deleteGroup(context: Context, groupId: String) = synchronized(configLock) {
         val currentGroups = getGroups(context).filter { it.id != groupId }
-        saveGroups(context, currentGroups)
-
-        // Clean up apps referencing this group
         val currentRules = getAppRules(context).toMutableMap()
         val targetPrefix = "$PREFIX_GROUP$groupId"
-        var changed = false
-        currentRules.entries.removeIf {
-            if (it.value == targetPrefix) {
-                changed = true
-                true
-            } else false
-        }
-        if (changed) {
-            val encoded = json.encodeToString(currentRules)
-            getPrefs(context).edit().putString(KEY_APP_RULES, encoded).apply()
-            notifyHook(context)
-        }
+        currentRules.entries.removeIf { it.value == targetPrefix }
+
+        getPrefs(context).edit()
+            .putString(KEY_GROUPS, json.encodeToString(currentGroups))
+            .putString(KEY_APP_RULES, json.encodeToString(currentRules))
+            .apply()
+        notifyHook(context)
     }
 
     fun getKnownImePackages(context: Context): Set<String> {
@@ -317,24 +313,18 @@ object ConfigManager {
             Log.w("ConfigManager", "Broadcast deferred: ${t.message}")
         }
 
-        // 3. Root background sync (queued sequentially, atomic write, pipe-drain & SELinux restorecon)
+        // 3. Root background sync (queued sequentially, atomic write & SELinux restorecon)
         rootSyncExecutor.execute {
             var proc: Process? = null
             try {
                 val b64 = Base64.encodeToString(fullJson.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
                 proc = Runtime.getRuntime().exec("su")
-                // Drain stdout and stderr to prevent pipe buffer exhaustion deadlocks
-                val stdoutDrain = Thread { try { proc.inputStream.readBytes() } catch (ignored: Throwable) {} }
-                val stderrDrain = Thread { try { proc.errorStream.readBytes() } catch (ignored: Throwable) {} }
-                stdoutDrain.start()
-                stderrDrain.start()
-
                 proc.outputStream.bufferedWriter().use { writer ->
-                    writer.write("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS\n")
-                    writer.write("settings put global $SETTINGS_CONFIG_KEY \"$(echo '$b64' | base64 -d)\"\n")
+                    writer.write("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1\n")
+                    writer.write("settings put global $SETTINGS_CONFIG_KEY \"$(echo '$b64' | base64 -d)\" >/dev/null 2>&1\n")
                     writer.write("echo \"$b64\" | base64 -d > $SYSTEM_CONFIG_PATH.tmp && mv -f $SYSTEM_CONFIG_PATH.tmp $SYSTEM_CONFIG_PATH\n")
-                    writer.write("chmod 644 $SYSTEM_CONFIG_PATH\n")
-                    writer.write("restorecon $SYSTEM_CONFIG_PATH 2>/dev/null || true\n")
+                    writer.write("chmod 644 $SYSTEM_CONFIG_PATH >/dev/null 2>&1\n")
+                    writer.write("restorecon $SYSTEM_CONFIG_PATH >/dev/null 2>&1 || true\n")
                     writer.write("exit\n")
                     writer.flush()
                 }
@@ -344,6 +334,11 @@ object ConfigManager {
                 }
             } catch (ignored: Throwable) {
                 proc?.destroyForcibly()
+            } finally {
+                try {
+                    proc?.inputStream?.close()
+                    proc?.errorStream?.close()
+                } catch (ignored: Throwable) {}
             }
         }
     }

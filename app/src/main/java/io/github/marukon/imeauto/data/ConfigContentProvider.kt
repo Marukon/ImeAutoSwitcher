@@ -13,11 +13,8 @@ class ConfigContentProvider : ContentProvider() {
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
         val callingUid = android.os.Binder.getCallingUid()
         val myUid = android.os.Process.myUid()
-        val isSameApp = try {
-            android.os.UserHandle.isSameApp(callingUid, myUid)
-        } catch (t: Throwable) {
-            callingUid == myUid
-        }
+        // AOSP standard multi-user calculation (UserHandle.PER_USER_RANGE = 100000)
+        val isSameApp = (callingUid % 100000) == (myUid % 100000)
 
         if (callingUid != android.os.Process.SYSTEM_UID && !isSameApp && callingUid != 0) {
             throw SecurityException("Unauthorized UID $callingUid attempting to access ConfigContentProvider")
