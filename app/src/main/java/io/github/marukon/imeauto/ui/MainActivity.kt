@@ -1,9 +1,12 @@
 package io.github.marukon.imeauto.ui
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -23,11 +26,24 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.filled.VerticalAlignBottom
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,13 +52,16 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -51,7 +70,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.marukon.imeauto.R
 import io.github.marukon.imeauto.data.ConfigManager
+import io.github.marukon.imeauto.ui.components.AboutDialog
 import io.github.marukon.imeauto.ui.components.AppItemCard
+import io.github.marukon.imeauto.ui.components.GroupManagerDialog
 import io.github.marukon.imeauto.ui.components.ImeSelectDialog
 import io.github.marukon.imeauto.ui.components.TopStatusCard
 import io.github.marukon.imeauto.ui.theme.ImeAutoSwitcherTheme
@@ -83,15 +104,62 @@ class MainActivity : ComponentActivity() {
                 val globalEnabled by viewModel.globalEnabled.collectAsState()
                 val defaultImeId by viewModel.defaultImeId.collectAsState()
                 val hideNoLauncher by viewModel.hideNoLauncher.collectAsState()
+                val hideLauncherIcon by viewModel.hideLauncherIcon.collectAsState()
                 val aggressiveRecheck by viewModel.aggressiveRecheck.collectAsState()
                 val isModuleActive by viewModel.isModuleActive.collectAsState()
                 val selectedTab by viewModel.selectedTab.collectAsState()
                 val searchQuery by viewModel.searchQuery.collectAsState()
                 val apps by viewModel.filteredApps.collectAsState()
                 val imes by viewModel.imes.collectAsState()
+                val groups by viewModel.groups.collectAsState()
                 val isLoading by viewModel.isLoading.collectAsState()
                 val selectedAppForImePick by viewModel.selectedAppForImePick.collectAsState()
                 val isPickingDefaultIme by viewModel.isPickingDefaultIme.collectAsState()
+
+                var showMenu by remember { mutableStateOf(false) }
+                var showGroupManagerDialog by remember { mutableStateOf(false) }
+                var showAboutDialog by remember { mutableStateOf(false) }
+                var showHideIconConfirmDialog by remember { mutableStateOf(false) }
+
+                // Backup: Export JSON
+                val exportLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("application/json")
+                ) { uri ->
+                    if (uri != null) {
+                        try {
+                            context.contentResolver.openOutputStream(uri)?.use { stream ->
+                                val jsonStr = viewModel.exportConfig(context)
+                                stream.write(jsonStr.toByteArray(Charsets.UTF_8))
+                            }
+                            Toast.makeText(context, "配置导出成功", Toast.LENGTH_SHORT).show()
+                        } catch (t: Throwable) {
+                            Toast.makeText(context, "导出失败: ${t.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+
+                // Restore: Import JSON
+                val importLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    if (uri != null) {
+                        try {
+                            val content = context.contentResolver.openInputStream(uri)?.use { stream ->
+                                stream.bufferedReader(Charsets.UTF_8).readText()
+                            }
+                            if (!content.isNullOrEmpty()) {
+                                val success = viewModel.importConfig(context, content)
+                                if (success) {
+                                    Toast.makeText(context, "配置导入成功，已立即热重载生效", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "导入失败：JSON 格式不符", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            Toast.makeText(context, "导入失败: ${t.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
 
                 val defaultImeLabel = remember(defaultImeId, imes) {
                     imes.firstOrNull { it.id == defaultImeId }?.label ?: defaultImeId
@@ -107,10 +175,147 @@ class MainActivity : ComponentActivity() {
                                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
-                                        text = "Modern LSPosed API 102",
+                                        text = "Modern LSPosed API 102 · v1.1.0",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )
+                                }
+                            },
+                            actions = {
+                                IconButton(onClick = { viewModel.loadData(context) }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "刷新应用列表"
+                                    )
+                                }
+                                Box {
+                                    IconButton(onClick = { showMenu = true }) {
+                                        Icon(
+                                            imageVector = Icons.Default.MoreVert,
+                                            contentDescription = "更多设置"
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = showMenu,
+                                        onDismissRequest = { showMenu = false }
+                                    ) {
+                                        // 1. Hide Launcher Icon Toggle
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(if (hideLauncherIcon) "恢复桌面图标显示" else "隐藏桌面图标")
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.VisibilityOff,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showMenu = false
+                                                showHideIconConfirmDialog = true
+                                            }
+                                        )
+
+                                        // 2. Hide apps without launcher icons
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(stringResource(R.string.hide_no_launcher_title))
+                                            },
+                                            trailingIcon = {
+                                                Checkbox(
+                                                    checked = hideNoLauncher,
+                                                    onCheckedChange = null
+                                                )
+                                            },
+                                            onClick = {
+                                                val next = !hideNoLauncher
+                                                viewModel.setHideNoLauncher(context, next)
+                                            }
+                                        )
+
+                                        // 3. Aggressive recheck
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(stringResource(R.string.aggressive_recheck_title))
+                                            },
+                                            trailingIcon = {
+                                                Checkbox(
+                                                    checked = aggressiveRecheck,
+                                                    onCheckedChange = null
+                                                )
+                                            },
+                                            onClick = {
+                                                val next = !aggressiveRecheck
+                                                viewModel.setAggressiveRecheck(context, next)
+                                            }
+                                        )
+
+                                        HorizontalDivider()
+
+                                        // 4. Group Manager
+                                        DropdownMenuItem(
+                                            text = { Text("应用分组管理 (批量切换)") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Folder,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showMenu = false
+                                                showGroupManagerDialog = true
+                                            }
+                                        )
+
+                                        HorizontalDivider()
+
+                                        // 5. Export Backup
+                                        DropdownMenuItem(
+                                            text = { Text("导出配置 (备份)") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Upload,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showMenu = false
+                                                exportLauncher.launch("imeauto_backup_${System.currentTimeMillis() / 1000}.json")
+                                            }
+                                        )
+
+                                        // 6. Import Restore
+                                        DropdownMenuItem(
+                                            text = { Text("导入配置 (还原)") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.VerticalAlignBottom,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showMenu = false
+                                                importLauncher.launch(arrayOf("application/json", "*/*"))
+                                            }
+                                        )
+
+                                        HorizontalDivider()
+
+                                        // 7. About Page
+                                        DropdownMenuItem(
+                                            text = { Text("关于 ImeAutoSwitcher") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Info,
+                                                    contentDescription = null
+                                                )
+                                            },
+                                            onClick = {
+                                                showMenu = false
+                                                showAboutDialog = true
+                                            }
+                                        )
+                                    }
                                 }
                             },
                             colors = TopAppBarDefaults.topAppBarColors(
@@ -143,10 +348,8 @@ class MainActivity : ComponentActivity() {
                                         onGlobalEnabledChange = { viewModel.setGlobalEnabled(context, it) },
                                         defaultImeLabel = defaultImeLabel,
                                         onDefaultImeClick = { viewModel.setPickingDefaultIme(true) },
-                                        aggressiveRecheck = aggressiveRecheck,
-                                        onAggressiveRecheckChange = { viewModel.setAggressiveRecheck(context, it) },
-                                        hideNoLauncher = hideNoLauncher,
-                                        onHideNoLauncherChange = { viewModel.setHideNoLauncher(context, it) }
+                                        groupCount = groups.size,
+                                        onOpenGroupManager = { showGroupManagerDialog = true }
                                     )
                                 }
 
@@ -182,7 +385,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
-                                // Filter chips: 全部, 用户应用, 系统应用, 已自定义
+                                // Filter chips: 全部, 用户应用, 系统应用, 已自定义, 📁 分组应用
                                 item {
                                     LazyRow(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -215,6 +418,13 @@ class MainActivity : ComponentActivity() {
                                                 selected = selectedTab == AppFilterTab.CONFIGURED,
                                                 onClick = { viewModel.setSelectedTab(AppFilterTab.CONFIGURED) },
                                                 label = { Text(stringResource(R.string.tab_configured)) }
+                                            )
+                                        }
+                                        item {
+                                            FilterChip(
+                                                selected = selectedTab == AppFilterTab.GROUPED,
+                                                onClick = { viewModel.setSelectedTab(AppFilterTab.GROUPED) },
+                                                label = { Text("📁 分组应用") }
                                             )
                                         }
                                     }
@@ -252,6 +462,7 @@ class MainActivity : ComponentActivity() {
                                         AppItemCard(
                                             app = app,
                                             allImes = imes,
+                                            groups = groups,
                                             onSelectImeClick = { viewModel.selectAppForImePick(app) }
                                         )
                                     }
@@ -264,8 +475,14 @@ class MainActivity : ComponentActivity() {
                             ImeSelectDialog(
                                 title = "选择 ${targetApp.name} 的输入法",
                                 currentSelectedId = targetApp.assignedImeId,
+                                isImeApp = targetApp.isImeApp,
                                 allowDefaultOption = true,
                                 imes = imes,
+                                groups = groups,
+                                onManageGroupsClick = {
+                                    viewModel.selectAppForImePick(null)
+                                    showGroupManagerDialog = true
+                                },
                                 onSelectIme = { imeId ->
                                     viewModel.updateAppIme(context, targetApp.packageName, imeId)
                                 },
@@ -287,6 +504,65 @@ class MainActivity : ComponentActivity() {
                                     viewModel.setPickingDefaultIme(false)
                                 },
                                 onDismiss = { viewModel.setPickingDefaultIme(false) }
+                            )
+                        }
+
+                        // Group Manager Dialog
+                        if (showGroupManagerDialog) {
+                            GroupManagerDialog(
+                                groups = groups,
+                                allImes = imes,
+                                onAddGroup = { name, imeId -> viewModel.addGroup(context, name, imeId) },
+                                onUpdateGroup = { updated -> viewModel.updateGroup(context, updated) },
+                                onDeleteGroup = { groupId -> viewModel.deleteGroup(context, groupId) },
+                                onDismiss = { showGroupManagerDialog = false }
+                            )
+                        }
+
+                        // About Dialog
+                        if (showAboutDialog) {
+                            AboutDialog(
+                                onDismiss = { showAboutDialog = false }
+                            )
+                        }
+
+                        // Hide Launcher Icon Confirmation Dialog
+                        if (showHideIconConfirmDialog) {
+                            val nextState = !hideLauncherIcon
+                            AlertDialog(
+                                onDismissRequest = { showHideIconConfirmDialog = false },
+                                title = {
+                                    Text(text = if (nextState) "隐藏桌面图标" else "恢复桌面图标显示")
+                                },
+                                text = {
+                                    Text(
+                                        text = if (nextState) {
+                                            "隐藏桌面图标后，桌面启动器将不再显示本应用图标。\n\n后续可在 LSPosed 管理器中点击本模块条目随时重新打开本界面。\n\n是否确认隐藏？"
+                                        } else {
+                                            "恢复桌面图标显示后，系统桌面启动器将重新展示本应用图标。\n\n是否确认恢复？"
+                                        }
+                                    )
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            viewModel.setHideLauncherIcon(context, nextState)
+                                            showHideIconConfirmDialog = false
+                                            Toast.makeText(
+                                                context,
+                                                if (nextState) "已隐藏桌面图标，可通过 LSPosed 打开" else "已恢复桌面图标显示",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    ) {
+                                        Text(text = "确认")
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showHideIconConfirmDialog = false }) {
+                                        Text(text = "取消")
+                                    }
+                                }
                             )
                         }
                     }
