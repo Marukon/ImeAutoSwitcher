@@ -75,6 +75,9 @@ object SystemServerHook {
     private var lastTargetIme: String? = null
 
     @Volatile
+    private var isCustomImeActive = false
+
+    @Volatile
     private var pendingVerificationTask: java.util.concurrent.ScheduledFuture<*>? = null
 
     @Synchronized
@@ -345,9 +348,9 @@ object SystemServerHook {
                                 val pkg = currentForegroundPackage
                                 switchExecutor.execute {
                                     try {
-                                        val expectedIme = getTargetImeForPackage(pkg)
-                                        if (isValidImeId(expectedIme)) {
-                                            verifyAndEnforceIme(expectedIme!!, "${targetClass.simpleName}.${m.name}")
+                                        val customIme = getCustomTargetIme(pkg)
+                                        if (customIme != null && isValidImeId(customIme)) {
+                                            verifyAndEnforceIme(customIme, "${targetClass.simpleName}.${m.name}")
                                         }
                                     } catch (t: Throwable) {
                                         HookUtils.logE("Recheck error in ${targetClass.simpleName}.${m.name}", t)
@@ -644,9 +647,26 @@ object SystemServerHook {
                     return@execute
                 }
 
-                val targetIme = getTargetImeForPackage(packageName)
-                if (targetIme != null && isValidImeId(targetIme)) {
-                    applyImeSwitch(targetIme, packageName)
+                val customIme = getCustomTargetIme(packageName)
+                if (customIme != null && isValidImeId(customIme)) {
+                    // App has an explicit custom rule configured
+                    val isDifferentFromDefault = defaultImeId.isNotEmpty() && customIme != defaultImeId
+                    HookUtils.log("Foreground [$packageName] has custom rule: $customIme (differentFromDefault=$isDifferentFromDefault)")
+                    applyImeSwitch(customIme, packageName)
+                    isCustomImeActive = isDifferentFromDefault
+                } else {
+                    // App is "不修改" (unconfigured or keep-current)
+                    if (isCustomImeActive) {
+                        // User just exited a modified app whose IME differed from default: perform a single fallback
+                        if (isValidImeId(defaultImeId)) {
+                            HookUtils.log("Exited modified app, restoring default IME [$defaultImeId] for [$packageName]")
+                            applyImeSwitch(defaultImeId, "RestoreAfter:$packageName")
+                        }
+                        isCustomImeActive = false
+                    } else {
+                        // System is in normal state and app has no custom rule: zero injection!
+                        HookUtils.log("Foreground [$packageName] is unmodified, skipping injection")
+                    }
                 }
             } catch (t: Throwable) {
                 HookUtils.logE("Error handling foreground app change for $packageName", t)
@@ -654,39 +674,28 @@ object SystemServerHook {
         }
     }
 
-    private fun getTargetImeForPackage(pkg: String?): String? {
+    private fun getCustomTargetIme(pkg: String?): String? {
         if (pkg.isNullOrEmpty()) return null
-        val mapped = appRules[pkg]
-        if (!mapped.isNullOrEmpty()) {
-            if (mapped == ConfigManager.RULE_KEEP_CURRENT) {
-                return null // Explicitly configured to keep current IME
-            }
-            if (mapped.startsWith(ConfigManager.PREFIX_GROUP)) {
-                val groupId = mapped.removePrefix(ConfigManager.PREFIX_GROUP)
-                val targetIme = groupsMap[groupId]
-                if (targetIme == ConfigManager.RULE_KEEP_CURRENT) {
-                    return null // Group configured to keep current
-                }
-                if (isValidImeId(targetIme)) {
-                    return targetIme
-                }
-                // Group target is unresolved or empty, safely fallback to default IME if valid
-                return defaultImeId.takeIf { isValidImeId(it) }
-            }
-            if (isValidImeId(mapped)) {
-                return mapped
-            }
-            // Invalid or corrupted mapped rule, safely fallback to default IME if valid
-            return defaultImeId.takeIf { isValidImeId(it) }
-        }
-
-        // Default behavior: IME apps default to keep current IME to prevent switching loops/glitches
         if (isImePackage(pkg)) {
-            HookUtils.log("Package [$pkg] is an IME app, keeping current IME by default")
-            return null
+            // IME apps default to keep current, unless explicitly configured
+            val mapped = appRules[pkg] ?: return null
+            return resolveRuleToIme(mapped)
         }
+        val mapped = appRules[pkg] ?: return null
+        return resolveRuleToIme(mapped)
+    }
 
-        return defaultImeId.takeIf { isValidImeId(it) }
+    private fun resolveRuleToIme(mapped: String): String? {
+        if (mapped == ConfigManager.RULE_KEEP_CURRENT) return null
+        if (mapped.startsWith(ConfigManager.PREFIX_GROUP)) {
+            val groupId = mapped.removePrefix(ConfigManager.PREFIX_GROUP)
+            val groupIme = groupsMap[groupId]
+            if (groupIme == ConfigManager.RULE_KEEP_CURRENT || groupIme.isNullOrEmpty()) {
+                return null
+            }
+            return if (isValidImeId(groupIme)) groupIme else null
+        }
+        return if (isValidImeId(mapped)) mapped else null
     }
 
     private fun isImePackage(pkg: String): Boolean {

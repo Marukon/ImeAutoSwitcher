@@ -54,7 +54,7 @@ fun AppItemCard(
         val rule = app.assignedImeId
         when {
             rule == null -> {
-                if (app.isImeApp) "保持不变" else "跟随默认"
+                if (app.isImeApp) "保持不变" else "不修改"
             }
             rule == ConfigManager.RULE_KEEP_CURRENT -> {
                 "保持不变"

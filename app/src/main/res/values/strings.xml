@@ -8,7 +8,7 @@
     <string name="global_enabled_title">自动切换服务</string>
     <string name="global_enabled_desc">监听前台应用切换并无感匹配输入法</string>
     <string name="default_ime_title">默认回退输入法</string>
-    <string name="default_ime_subtitle">未单独配置的应用将自动使用此输入法</string>
+    <string name="default_ime_subtitle">退出已修改的应用时自动恢复此输入法</string>
     <string name="aggressive_recheck_title">双重输入焦点复检</string>
     <string name="aggressive_recheck_desc">在焦点获取与输入建立时实时复检，防止被系统重置</string>
     <string name="hide_no_launcher_title">隐藏无桌面图标应用</string>
@@ -22,7 +22,7 @@
 
     <!-- Dialog Strings -->
     <string name="select_ime_dialog_title">选择目标输入法</string>
-    <string name="ime_option_default">跟随全局默认输入法</string>
+    <string name="ime_option_default">不修改</string>
     <string name="cancel">取消</string>
     <string name="save">保存</string>
 </resources>

@@ -77,11 +77,11 @@ fun ImeSelectDialog(
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text(
-                                    text = if (isImeApp) "默认规则 (输入法应用默认保持不变)" else stringResource(R.string.ime_option_default),
+                                    text = if (isImeApp) "默认规则 (输入法应用默认保持不变)" else "不修改",
                                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium)
                                 )
                                 Text(
-                                    text = if (isImeApp) "输入法本身无需频繁切出，默认不自动切换" else "跟随全局默认输入法设置动态切换",
+                                    text = if (isImeApp) "输入法本身无需频繁切出，默认不自动切换" else "不进行自动切换，保持当前输入法状态不变",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
