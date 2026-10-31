@@ -17,13 +17,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Push to LSPosed Distribution Repo
         env:
           LSP_TOKEN: ${{ secrets.LSP_REPO_TOKEN }}
         run: |
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git remote add lsposed "https://x-access-token:${LSP_TOKEN}@github.com/Xposed-Modules-Repo/io.github.marukon.imeauto.git"
+          git remote add lsposed "https://${LSP_TOKEN}@github.com/Xposed-Modules-Repo/io.github.marukon.imeauto.git"
           echo "Pushing main branch to Xposed-Modules-Repo/io.github.marukon.imeauto..."
           git push lsposed main:main --force

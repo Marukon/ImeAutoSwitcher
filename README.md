@@ -55,10 +55,13 @@
 
 ### 📱 兼容性与运行环境
 
-- **系统版本**：Android 9.0 ~ Android 16（深度兼容 ColorOS 15、OriginOS、HyperOS 等定制系统）
+- **已实测验证系统**：
+  - **OnePlus 12 (一加 12)**：ColorOS 15 (Android 16，SDK 36) + KernelSU + LSPosed，实测功能完整稳定。
+- **其他系统说明**：
+  - 理论支持 Android 9.0 ~ 16。由于各品牌厂商定制系统（如 HyperOS、OriginOS、One UI 等）底层对系统框架与输入法调度逻辑存在差异，**其他机型与系统请自行测试**。遇到问题欢迎提交 [Issues](https://github.com/Marukon/ImeAutoSwitcher/issues) 并附带系统日志反馈。
 - **环境要求**：
   - Root 方案：KernelSU / APatch / Magisk
-  - 框架版本：LSPosed（建议使用 LSPosed Modern 或支持 API 102 的最新版本）
+  - 框架版本：LSPosed（建议使用 LSPosed Modern 或支持 API 102 的版本）
 
 ---
 
