@@ -4,8 +4,20 @@ on:
   push:
     branches: [ "**" ]
     tags-ignore: [ "v*" ]
+    paths-ignore:
+      - '**.md'
+      - 'art/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [ "**" ]
+    paths-ignore:
+      - '**.md'
+      - 'art/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
