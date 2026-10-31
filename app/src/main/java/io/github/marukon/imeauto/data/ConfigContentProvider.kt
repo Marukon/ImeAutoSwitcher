@@ -22,6 +22,14 @@ class ConfigContentProvider : ContentProvider() {
                         ConfigManager.KEY_APP_RULES,
                         ConfigManager.getPrefs(ctx).getString(ConfigManager.KEY_APP_RULES, "{}")
                     )
+                    putString(
+                        ConfigManager.KEY_GROUPS,
+                        ConfigManager.getPrefs(ctx).getString(ConfigManager.KEY_GROUPS, "[]")
+                    )
+                    putString(
+                        ConfigManager.SETTINGS_CONFIG_KEY,
+                        ConfigManager.buildFullConfigJson(ctx)
+                    )
                 }
             }
             else -> null
