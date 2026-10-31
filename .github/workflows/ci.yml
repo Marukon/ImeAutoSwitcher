@@ -1,0 +1,79 @@
+name: CI Build & Test
+
+on:
+  push:
+    branches: [ "**" ]
+    tags-ignore: [ "v*" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "gradle"
+
+      - name: Setup Keystore from Secret
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "${KEYSTORE_BASE64}" | base64 -d > app/ci-keystore.jks
+
+      - name: Build Debug & Release APKs
+        env:
+          KEYSTORE_PATH: "ci-keystore.jks"
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug assembleRelease --no-daemon
+
+      - name: Collect APK Artifacts
+        run: |
+          mkdir -p apks/
+          find app/build/outputs/apk/debug -name "*.apk" -exec cp {} apks/ImeAutoSwitcher-debug.apk \;
+          find app/build/outputs/apk/release -name "*.apk" -exec cp {} apks/ImeAutoSwitcher-release.apk \;
+          ls -la apks/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: imeauto-apks
+          path: apks/
+          retention-days: 7
+
+      - name: Prune Old Artifacts on Success
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Build and test succeeded. Cleaning up artifacts from previous runs..."
+          CURRENT_RUN_ID="${{ github.run_id }}"
+          
+          # Query and delete artifacts belonging to other/older workflow runs
+          gh api "repos/${{ github.repository }}/actions/artifacts" --paginate --jq ".artifacts[] | select(.workflow_run.id != $CURRENT_RUN_ID) | .id" | while read -r art_id; do
+            if [ -n "$art_id" ]; then
+              echo "Pruning older artifact: $art_id"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$art_id" || true
+            fi
+          done
+          echo "Artifact cleanup completed."
+
+      - name: Clean up Sensitive Files
+        if: always()
+        run: |
+          rm -f app/ci-keystore.jks
+          rm -rf apks/
