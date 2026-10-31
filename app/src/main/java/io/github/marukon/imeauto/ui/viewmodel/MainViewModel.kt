@@ -19,12 +19,25 @@ enum class AppFilterTab {
     ALL, USER, SYSTEM, CONFIGURED, GROUPED
 }
 
+data class UsedImeFilter(
+    val imeId: String,
+    val label: String,
+    val count: Int
+)
+
+data class GroupFilterItem(
+    val groupId: String,
+    val name: String,
+    val count: Int
+)
+
 class MainViewModel : ViewModel() {
 
     private val _allApps = MutableStateFlow<List<AppItem>>(emptyList())
     private val _imes = MutableStateFlow<List<ImeItem>>(emptyList())
     private val _groups = MutableStateFlow<List<ImeGroup>>(emptyList())
     private val _selectedTab = MutableStateFlow(AppFilterTab.ALL)
+    private val _selectedFilter = MutableStateFlow("ALL")
     private val _hideNoLauncher = MutableStateFlow(true)
     private val _hideLauncherIcon = MutableStateFlow(false)
     private val _searchQuery = MutableStateFlow("")
@@ -49,6 +62,7 @@ class MainViewModel : ViewModel() {
     val isPickingDefaultIme: StateFlow<Boolean> = _isPickingDefaultIme
 
     val selectedTab: StateFlow<AppFilterTab> = _selectedTab
+    val selectedFilter: StateFlow<String> = _selectedFilter
     val hideNoLauncher: StateFlow<Boolean> = _hideNoLauncher
     val hideLauncherIcon: StateFlow<Boolean> = _hideLauncherIcon
     val searchQuery: StateFlow<String> = _searchQuery
@@ -56,23 +70,80 @@ class MainViewModel : ViewModel() {
     val groups: StateFlow<List<ImeGroup>> = _groups
     val isLoading: StateFlow<Boolean> = _isLoading
 
+    val usedImeFilters: StateFlow<List<UsedImeFilter>> = combine(
+        _allApps,
+        _imes,
+        _groups
+    ) { apps, imes, groups ->
+        val groupMap = groups.associate { it.id to it.targetImeId }
+        val counts = mutableMapOf<String, Int>()
+
+        for (app in apps) {
+            val rule = app.assignedImeId ?: continue
+            if (rule == ConfigManager.RULE_KEEP_CURRENT) continue
+            val effectiveIme = if (rule.startsWith(ConfigManager.PREFIX_GROUP)) {
+                val gid = rule.removePrefix(ConfigManager.PREFIX_GROUP)
+                groupMap[gid]?.takeIf { it != ConfigManager.RULE_KEEP_CURRENT && it.isNotEmpty() }
+            } else {
+                rule
+            }
+            if (!effectiveIme.isNullOrEmpty()) {
+                counts[effectiveIme] = (counts[effectiveIme] ?: 0) + 1
+            }
+        }
+
+        counts.map { (imeId, count) ->
+            val label = imes.firstOrNull { it.id == imeId }?.label ?: imeId
+            UsedImeFilter(imeId, label, count)
+        }.sortedByDescending { it.count }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val groupFilters: StateFlow<List<GroupFilterItem>> = combine(
+        _allApps,
+        _groups
+    ) { apps, groups ->
+        groups.map { group ->
+            val targetKey = "${ConfigManager.PREFIX_GROUP}${group.id}"
+            val count = apps.count { it.assignedImeId == targetKey }
+            GroupFilterItem(group.id, group.name, count)
+        }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     val filteredApps: StateFlow<List<AppItem>> = combine(
         _allApps,
-        _selectedTab,
+        _selectedFilter,
         _hideNoLauncher,
-        _searchQuery
-    ) { apps, tab, hideNoLauncher, query ->
+        _searchQuery,
+        _groups
+    ) { apps, filter, hideNoLauncher, query, groups ->
+        val groupMap = groups.associate { it.id to it.targetImeId }
+
         apps.filter { app ->
             // Filter 1: Launcher icon availability
             val matchesLauncher = if (hideNoLauncher) app.isLaunchable else true
 
-            // Filter 2: Tab selection
-            val matchesTab = when (tab) {
-                AppFilterTab.ALL -> true
-                AppFilterTab.USER -> !app.isSystem
-                AppFilterTab.SYSTEM -> app.isSystem
-                AppFilterTab.CONFIGURED -> app.assignedImeId != null
-                AppFilterTab.GROUPED -> app.assignedImeId?.startsWith(ConfigManager.PREFIX_GROUP) == true
+            // Filter 2: Filter selection (Category, Group, or specific IME)
+            val matchesFilter = when {
+                filter == "ALL" -> true
+                filter == "USER" -> !app.isSystem
+                filter == "SYSTEM" -> app.isSystem
+                filter == "CONFIGURED" -> app.assignedImeId != null
+                filter == "GROUPED" -> app.assignedImeId?.startsWith(ConfigManager.PREFIX_GROUP) == true
+                filter.startsWith("GROUP:") -> {
+                    val gid = filter.removePrefix("GROUP:")
+                    app.assignedImeId == "${ConfigManager.PREFIX_GROUP}$gid"
+                }
+                filter.startsWith("IME:") -> {
+                    val targetIme = filter.removePrefix("IME:")
+                    val rule = app.assignedImeId
+                    if (rule == null) false
+                    else if (rule == targetIme) true
+                    else if (rule.startsWith(ConfigManager.PREFIX_GROUP)) {
+                        val gid = rule.removePrefix(ConfigManager.PREFIX_GROUP)
+                        groupMap[gid] == targetIme
+                    } else false
+                }
+                else -> true
             }
 
             // Filter 3: Search query
@@ -83,7 +154,7 @@ class MainViewModel : ViewModel() {
                         app.packageName.contains(query, ignoreCase = true)
             }
 
-            matchesLauncher && matchesTab && matchesQuery
+            matchesLauncher && matchesFilter && matchesQuery
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -158,6 +229,18 @@ class MainViewModel : ViewModel() {
 
     fun setSelectedTab(tab: AppFilterTab) {
         _selectedTab.value = tab
+        _selectedFilter.value = tab.name
+    }
+
+    fun setSelectedFilter(filter: String) {
+        _selectedFilter.value = filter
+        when (filter) {
+            "ALL" -> _selectedTab.value = AppFilterTab.ALL
+            "USER" -> _selectedTab.value = AppFilterTab.USER
+            "SYSTEM" -> _selectedTab.value = AppFilterTab.SYSTEM
+            "CONFIGURED" -> _selectedTab.value = AppFilterTab.CONFIGURED
+            "GROUPED" -> _selectedTab.value = AppFilterTab.GROUPED
+        }
     }
 
     fun setSearchQuery(query: String) {
@@ -201,6 +284,9 @@ class MainViewModel : ViewModel() {
     }
 
     fun deleteGroup(context: Context, groupId: String) {
+        if (_selectedFilter.value == "GROUP:$groupId") {
+            setSelectedFilter("ALL")
+        }
         ConfigManager.deleteGroup(context, groupId)
         _groups.value = ConfigManager.getGroups(context)
 

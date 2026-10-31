@@ -301,10 +301,8 @@ object ConfigManager {
                 val b64 = Base64.encodeToString(fullJson.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
                 val proc = Runtime.getRuntime().exec("su")
                 proc.outputStream.bufferedWriter().use { writer ->
-                    if (!wroteGlobal) {
-                        writer.write("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS\n")
-                        writer.write("settings put global $SETTINGS_CONFIG_KEY '$fullJson'\n")
-                    }
+                    writer.write("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS\n")
+                    writer.write("settings put global $SETTINGS_CONFIG_KEY \"$(echo '$b64' | base64 -d)\"\n")
                     writer.write("echo \"$b64\" | base64 -d > $SYSTEM_CONFIG_PATH\n")
                     writer.write("chmod 644 $SYSTEM_CONFIG_PATH\n")
                     writer.write("exit\n")

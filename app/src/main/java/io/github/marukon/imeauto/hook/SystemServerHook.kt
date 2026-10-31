@@ -23,8 +23,11 @@ object SystemServerHook {
 
     private const val ACTIVE_FLAG_KEY = "io_github_marukon_imeauto_active"
 
+    @Volatile
     private var module: XposedModule? = null
+    @Volatile
     private var systemContext: Context? = null
+    @Volatile
     private var immsInstance: Any? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val switchExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
@@ -34,6 +37,9 @@ object SystemServerHook {
 
     @Volatile
     private var isImmsHookInstalled = false
+
+    @Volatile
+    private var isUnbindHookInstalled = false
 
     @Volatile
     private var isContextInitialized = false
@@ -60,12 +66,16 @@ object SystemServerHook {
     private val appRules = ConcurrentHashMap<String, String>()
     private val groupsMap = ConcurrentHashMap<String, String>()
     private val knownImePackages = ConcurrentHashMap.newKeySet<String>()
+    private val nonImePackages = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var currentForegroundPackage: String? = null
 
     @Volatile
     private var lastTargetIme: String? = null
+
+    @Volatile
+    private var pendingVerificationTask: java.util.concurrent.ScheduledFuture<*>? = null
 
     @Synchronized
     fun init(xposedModule: XposedModule, classLoader: ClassLoader) {
@@ -95,6 +105,7 @@ object SystemServerHook {
     }
 
     private fun hookContextImplUnbindService(classLoader: ClassLoader) {
+        if (isUnbindHookInstalled) return
         try {
             val contextImplClass = Class.forName("android.app.ContextImpl", false, classLoader)
             val unbindMethod = contextImplClass.getDeclaredMethod(
@@ -115,6 +126,7 @@ object SystemServerHook {
                         }
                     }
                 }
+            isUnbindHookInstalled = true
             HookUtils.log("Successfully installed crash-prevention guard for ContextImpl.unbindService")
         } catch (t: Throwable) {
             HookUtils.logE("Failed to install unbindService crash guard", t)
@@ -144,10 +156,10 @@ object SystemServerHook {
                             if (ctx != null) {
                                 initSystemContext(ctx)
                             }
+                            ensureConfigAndReceiver()
                         } catch (t: Throwable) {
-                            HookUtils.logE("Failed to capture Context from onSystemReady", t)
+                            HookUtils.logE("Failed in onSystemReady intercept", t)
                         }
-                        ensureConfigAndReceiver()
                         result
                     }
             }
@@ -163,13 +175,17 @@ object SystemServerHook {
                     ?.setPriority(XposedInterface.PRIORITY_DEFAULT)
                     ?.intercept { chain ->
                         val result = chain.proceed()
-                        val args = chain.args
-                        if (args.isNotEmpty()) {
-                            val activityRecord = args[0]
-                            val pkg = HookUtils.getPackageNameFromActivityRecord(activityRecord)
-                            if (!pkg.isNullOrEmpty()) {
-                                handleForegroundAppChanged(pkg)
+                        try {
+                            val args = chain.args
+                            if (args.isNotEmpty()) {
+                                val activityRecord = args[0]
+                                val pkg = HookUtils.getPackageNameFromActivityRecord(activityRecord)
+                                if (!pkg.isNullOrEmpty()) {
+                                    handleForegroundAppChanged(pkg)
+                                }
                             }
+                        } catch (t: Throwable) {
+                            HookUtils.logE("Error in ATMS setResumedActivity intercept", t)
                         }
                         result
                     }
@@ -194,13 +210,17 @@ object SystemServerHook {
                         ?.setPriority(XposedInterface.PRIORITY_DEFAULT)
                         ?.intercept { chain ->
                             val result = chain.proceed()
-                            val args = chain.args
-                            if (args.isNotEmpty()) {
-                                val activityRecord = args[0]
-                                val pkg = HookUtils.getPackageNameFromActivityRecord(activityRecord)
-                                if (!pkg.isNullOrEmpty()) {
-                                    handleForegroundAppChanged(pkg)
+                            try {
+                                val args = chain.args
+                                if (args.isNotEmpty()) {
+                                    val activityRecord = args[0]
+                                    val pkg = HookUtils.getPackageNameFromActivityRecord(activityRecord)
+                                    if (!pkg.isNullOrEmpty()) {
+                                        handleForegroundAppChanged(pkg)
+                                    }
                                 }
+                            } catch (t: Throwable) {
+                                HookUtils.logE("Error in $className.setResumedActivity intercept", t)
                             }
                             result
                         }
@@ -222,13 +242,17 @@ object SystemServerHook {
                     ?.setPriority(XposedInterface.PRIORITY_DEFAULT)
                     ?.intercept { chain ->
                         val result = chain.proceed()
-                        val args = chain.args
-                        val isTop = (args.firstOrNull() as? Boolean) ?: true
-                        if (isTop) {
-                            val pkg = HookUtils.getPackageNameFromActivityRecord(chain.thisObject)
-                            if (!pkg.isNullOrEmpty()) {
-                                handleForegroundAppChanged(pkg)
+                        try {
+                            val args = chain.args
+                            val isTop = (args.firstOrNull() as? Boolean) ?: true
+                            if (isTop) {
+                                val pkg = HookUtils.getPackageNameFromActivityRecord(chain.thisObject)
+                                if (!pkg.isNullOrEmpty()) {
+                                    handleForegroundAppChanged(pkg)
+                                }
                             }
+                        } catch (t: Throwable) {
+                            HookUtils.logE("Error in onTopResumedActivityChanged intercept", t)
                         }
                         result
                     }
@@ -306,24 +330,32 @@ object SystemServerHook {
                 module?.hook(m)
                     ?.setPriority(XposedInterface.PRIORITY_DEFAULT)
                     ?.intercept { chain ->
-                        var inputPkg: String? = null
-                        for (arg in chain.args) {
-                            if (arg is EditorInfo) {
-                                inputPkg = arg.packageName
-                                break
-                            }
-                        }
-
-                        if (!inputPkg.isNullOrEmpty()) {
-                            handleForegroundAppChanged(inputPkg)
-                        } else if (isGlobalEnabled && aggressiveRecheck) {
-                            val pkg = currentForegroundPackage
-                            switchExecutor.execute {
-                                val expectedIme = getTargetImeForPackage(pkg)
-                                if (!expectedIme.isNullOrEmpty()) {
-                                    verifyAndEnforceIme(expectedIme, "${targetClass.simpleName}.${m.name}")
+                        try {
+                            var inputPkg: String? = null
+                            for (arg in chain.args) {
+                                if (arg is EditorInfo) {
+                                    inputPkg = arg.packageName
+                                    break
                                 }
                             }
+
+                            if (!inputPkg.isNullOrEmpty()) {
+                                handleForegroundAppChanged(inputPkg)
+                            } else if (isGlobalEnabled && aggressiveRecheck) {
+                                val pkg = currentForegroundPackage
+                                switchExecutor.execute {
+                                    try {
+                                        val expectedIme = getTargetImeForPackage(pkg)
+                                        if (isValidImeId(expectedIme)) {
+                                            verifyAndEnforceIme(expectedIme!!, "${targetClass.simpleName}.${m.name}")
+                                        }
+                                    } catch (t: Throwable) {
+                                        HookUtils.logE("Recheck error in ${targetClass.simpleName}.${m.name}", t)
+                                    }
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            HookUtils.logE("Error in ${targetClass.simpleName}.${m.name} intercept", t)
                         }
                         chain.proceed()
                     }
@@ -379,8 +411,10 @@ object SystemServerHook {
                 false,
                 object : android.database.ContentObserver(mainHandler) {
                     override fun onChange(selfChange: Boolean) {
-                        HookUtils.log("Settings.Global changed, reloading configuration...")
-                        loadConfigFromAllSources(context)
+                        switchExecutor.execute {
+                            HookUtils.log("Settings.Global changed, reloading configuration...")
+                            loadConfigFromAllSources(context)
+                        }
                     }
                 }
             )
@@ -413,14 +447,44 @@ object SystemServerHook {
         }
     }
 
+    fun isValidImeId(id: String?): Boolean {
+        if (id.isNullOrEmpty()) return false
+        if (id == ConfigManager.RULE_KEEP_CURRENT) return false
+        if (id.startsWith(ConfigManager.PREFIX_GROUP)) return false
+        val slashIndex = id.indexOf('/')
+        return slashIndex > 0 && slashIndex < id.length - 1
+    }
+
+    private fun parseGroupsJson(groupsRaw: Any) {
+        try {
+            val groupsArr = when (groupsRaw) {
+                is org.json.JSONArray -> groupsRaw
+                is String -> org.json.JSONArray(groupsRaw)
+                else -> null
+            }
+            if (groupsArr != null) {
+                groupsMap.clear()
+                for (i in 0 until groupsArr.length()) {
+                    val item = groupsArr.getJSONObject(i)
+                    val id = item.optString("id")
+                    val ime = item.optString("targetImeId")
+                    if (id.isNotEmpty()) {
+                        groupsMap[id] = ime
+                    }
+                }
+                HookUtils.log("Parsed ${groupsMap.size} groups into groupsMap")
+            }
+        } catch (e: Throwable) {
+            HookUtils.logE("Failed to parse groups JSON", e)
+        }
+    }
+
     private fun loadConfigFromAllSources(context: Context) {
         // Priority 1: Settings.Global (zero IPC, completely internal to system_server)
         try {
             val globalConfig = Settings.Global.getString(context.contentResolver, ConfigManager.SETTINGS_CONFIG_KEY)
             if (!globalConfig.isNullOrEmpty()) {
-                if (applyConfigFromJsonString(globalConfig, "Settings.Global")) {
-                    return
-                }
+                applyConfigFromJsonString(globalConfig, "Settings.Global")
             }
         } catch (t: Throwable) {
             HookUtils.log("Settings.Global read error: ${t.message}")
@@ -432,17 +496,17 @@ object SystemServerHook {
             if (file.exists() && file.canRead()) {
                 val content = file.readText()
                 if (content.isNotEmpty()) {
-                    if (applyConfigFromJsonString(content, "File(/data/system)")) {
-                        return
-                    }
+                    applyConfigFromJsonString(content, "File(/data/system)")
                 }
             }
         } catch (t: Throwable) {
             HookUtils.log("File read error: ${t.message}")
         }
 
-        // Priority 3: Fallback ContentProvider
-        loadConfigFromProvider(context)
+        // Priority 3: Fallback ContentProvider (always load if groupsMap is empty or appRules is empty)
+        if (groupsMap.isEmpty() || appRules.isEmpty()) {
+            loadConfigFromProvider(context)
+        }
     }
 
     private fun applyConfigFromJsonString(jsonStr: String, source: String): Boolean {
@@ -472,23 +536,7 @@ object SystemServerHook {
                 }
             }
             if (root.has(ConfigManager.KEY_GROUPS)) {
-                val groupsRaw = root.get(ConfigManager.KEY_GROUPS)
-                val groupsArr = when (groupsRaw) {
-                    is org.json.JSONArray -> groupsRaw
-                    is String -> org.json.JSONArray(groupsRaw)
-                    else -> null
-                }
-                if (groupsArr != null) {
-                    groupsMap.clear()
-                    for (i in 0 until groupsArr.length()) {
-                        val item = groupsArr.getJSONObject(i)
-                        val id = item.optString("id")
-                        val ime = item.optString("targetImeId")
-                        if (id.isNotEmpty()) {
-                            groupsMap[id] = ime
-                        }
-                    }
-                }
+                parseGroupsJson(root.get(ConfigManager.KEY_GROUPS))
             }
             if (root.has(ConfigManager.KEY_KNOWN_IME_PACKAGES)) {
                 val imeRaw = root.get(ConfigManager.KEY_KNOWN_IME_PACKAGES)
@@ -504,7 +552,7 @@ object SystemServerHook {
                 }
             }
             isConfigLoaded = true
-            HookUtils.log("Config successfully applied from [$source]: ${appRules.size} rules, default=$defaultImeId, enabled=$isGlobalEnabled")
+            HookUtils.log("Config successfully applied from [$source]: ${appRules.size} rules, ${groupsMap.size} groups, default=$defaultImeId, enabled=$isGlobalEnabled")
             currentForegroundPackage?.let { handleForegroundAppChanged(it, force = true) }
             true
         } catch (e: Throwable) {
@@ -529,8 +577,16 @@ object SystemServerHook {
                         appRules[key] = obj.getString(key)
                     }
                 }
+                val groupsJson = bundle.getString(ConfigManager.KEY_GROUPS)
+                if (!groupsJson.isNullOrEmpty()) {
+                    parseGroupsJson(groupsJson)
+                }
+                val fullJson = bundle.getString(ConfigManager.SETTINGS_CONFIG_KEY)
+                if (!fullJson.isNullOrEmpty()) {
+                    applyConfigFromJsonString(fullJson, "Provider.fullJson")
+                }
                 isConfigLoaded = true
-                HookUtils.log("Loaded config via provider: ${appRules.size} rules, default=$defaultImeId, enabled=$isGlobalEnabled")
+                HookUtils.log("Loaded config via provider: ${appRules.size} rules, ${groupsMap.size} groups, default=$defaultImeId, enabled=$isGlobalEnabled")
             }
         } catch (t: Throwable) {
             HookUtils.log("loadConfigFromProvider deferred: ${t.message}")
@@ -538,11 +594,16 @@ object SystemServerHook {
     }
 
     private fun applyConfigFromIntent(intent: Intent, context: Context) {
+        HookUtils.putGlobalString(context.contentResolver, ACTIVE_FLAG_KEY, "1")
+
+        val fullJson = intent.getStringExtra(ConfigManager.SETTINGS_CONFIG_KEY)
+        if (!fullJson.isNullOrEmpty() && applyConfigFromJsonString(fullJson, "Broadcast.fullJson")) {
+            return
+        }
+
         isGlobalEnabled = intent.getBooleanExtra(ConfigManager.KEY_GLOBAL_ENABLED, true)
         defaultImeId = intent.getStringExtra(ConfigManager.KEY_DEFAULT_IME) ?: ""
         aggressiveRecheck = intent.getBooleanExtra(ConfigManager.KEY_AGGRESSIVE_RECHECK, true)
-
-        HookUtils.putGlobalString(context.contentResolver, ACTIVE_FLAG_KEY, "1")
 
         val rulesJson = intent.getStringExtra(ConfigManager.KEY_APP_RULES)
         if (!rulesJson.isNullOrEmpty()) {
@@ -553,7 +614,6 @@ object SystemServerHook {
                     appRules[key] = obj.getString(key)
                 }
                 isConfigLoaded = true
-                HookUtils.log("Config updated via broadcast: ${appRules.size} rules, default=$defaultImeId, enabled=$isGlobalEnabled")
             } catch (e: Exception) {
                 HookUtils.logE("Failed to parse app rules JSON", e)
             }
@@ -561,22 +621,10 @@ object SystemServerHook {
 
         val groupsJson = intent.getStringExtra(ConfigManager.KEY_GROUPS)
         if (!groupsJson.isNullOrEmpty()) {
-            try {
-                val arr = org.json.JSONArray(groupsJson)
-                groupsMap.clear()
-                for (i in 0 until arr.length()) {
-                    val item = arr.getJSONObject(i)
-                    val id = item.optString("id")
-                    val ime = item.optString("targetImeId")
-                    if (id.isNotEmpty()) {
-                        groupsMap[id] = ime
-                    }
-                }
-            } catch (e: Exception) {
-                HookUtils.logE("Failed to parse groups JSON", e)
-            }
+            parseGroupsJson(groupsJson)
         }
 
+        HookUtils.log("Config updated via broadcast: ${appRules.size} rules, ${groupsMap.size} groups, default=$defaultImeId, enabled=$isGlobalEnabled")
         currentForegroundPackage?.let { handleForegroundAppChanged(it, force = true) }
     }
 
@@ -586,22 +634,23 @@ object SystemServerHook {
         }
         currentForegroundPackage = packageName
 
-        // Ensure configuration and broadcast receiver are alive
-        if (!isConfigLoaded || !isReceiverRegistered) {
-            ensureConfigAndReceiver()
-        }
-
-        if (!isGlobalEnabled) {
-            return
-        }
-
-        val targetIme = getTargetImeForPackage(packageName)
-        if (targetIme.isNullOrEmpty()) {
-            return
-        }
-
         switchExecutor.execute {
-            applyImeSwitch(targetIme, packageName)
+            try {
+                if (!isConfigLoaded || !isReceiverRegistered) {
+                    ensureConfigAndReceiver()
+                }
+
+                if (!isGlobalEnabled) {
+                    return@execute
+                }
+
+                val targetIme = getTargetImeForPackage(packageName)
+                if (targetIme != null && isValidImeId(targetIme)) {
+                    applyImeSwitch(targetIme, packageName)
+                }
+            } catch (t: Throwable) {
+                HookUtils.logE("Error handling foreground app change for $packageName", t)
+            }
         }
     }
 
@@ -615,12 +664,20 @@ object SystemServerHook {
             if (mapped.startsWith(ConfigManager.PREFIX_GROUP)) {
                 val groupId = mapped.removePrefix(ConfigManager.PREFIX_GROUP)
                 val targetIme = groupsMap[groupId]
-                if (targetIme == ConfigManager.RULE_KEEP_CURRENT || targetIme.isNullOrEmpty()) {
+                if (targetIme == ConfigManager.RULE_KEEP_CURRENT) {
                     return null // Group configured to keep current
                 }
-                return targetIme
+                if (isValidImeId(targetIme)) {
+                    return targetIme
+                }
+                // Group target is unresolved or empty, safely fallback to default IME if valid
+                return defaultImeId.takeIf { isValidImeId(it) }
             }
-            return mapped
+            if (isValidImeId(mapped)) {
+                return mapped
+            }
+            // Invalid or corrupted mapped rule, safely fallback to default IME if valid
+            return defaultImeId.takeIf { isValidImeId(it) }
         }
 
         // Default behavior: IME apps default to keep current IME to prevent switching loops/glitches
@@ -629,11 +686,12 @@ object SystemServerHook {
             return null
         }
 
-        return defaultImeId.ifEmpty { null }
+        return defaultImeId.takeIf { isValidImeId(it) }
     }
 
     private fun isImePackage(pkg: String): Boolean {
         if (knownImePackages.contains(pkg)) return true
+        if (nonImePackages.contains(pkg)) return false
         val ctx = systemContext ?: HookUtils.getSystemContext() ?: return false
         return try {
             val intent = Intent("android.view.InputMethod").setPackage(pkg)
@@ -642,6 +700,7 @@ object SystemServerHook {
                 knownImePackages.add(pkg)
                 true
             } else {
+                nonImePackages.add(pkg)
                 false
             }
         } catch (t: Throwable) {
@@ -650,6 +709,11 @@ object SystemServerHook {
     }
 
     private fun applyImeSwitch(targetIme: String, triggerPkg: String) {
+        if (!isValidImeId(targetIme)) {
+            HookUtils.log("Refusing to apply invalid IME ID: '$targetIme' for [$triggerPkg]")
+            return
+        }
+
         val ctx = systemContext ?: HookUtils.getSystemContext()?.also { systemContext = it } ?: return
         val currentUserId = HookUtils.getCurrentUserId()
 
@@ -660,7 +724,12 @@ object SystemServerHook {
                 Settings.Secure.DEFAULT_INPUT_METHOD,
                 currentUserId
             )
-            if (targetIme == currentIme) {
+
+            // Self-healing check: if system settings currently has an invalid/corrupted IME (e.g. group:xxx),
+            // force write the valid targetIme to restore keyboard functionality immediately.
+            val isCurrentCorrupted = !isValidImeId(currentIme)
+
+            if (!isCurrentCorrupted && targetIme == currentIme) {
                 lastTargetIme = targetIme
                 return
             }
@@ -675,19 +744,27 @@ object SystemServerHook {
                 currentUserId
             )
             lastTargetIme = targetIme
+        } catch (t: Throwable) {
+            HookUtils.logE("Failed to switch IME in Settings.Secure", t)
         } finally {
             android.os.Binder.restoreCallingIdentity(token)
         }
 
-        // 3. Post-Switch Delayed Recheck asynchronously via switchExecutor
+        // 2. Post-Switch Delayed Recheck asynchronously via switchExecutor with debouncing
         if (aggressiveRecheck) {
-            switchExecutor.schedule({
+            pendingVerificationTask?.cancel(false)
+            pendingVerificationTask = switchExecutor.schedule({
                 verifyAndEnforceIme(targetIme, "DelayedVerification")
             }, 250, TimeUnit.MILLISECONDS)
         }
     }
 
     private fun verifyAndEnforceIme(expectedIme: String, source: String) {
+        if (!isValidImeId(expectedIme)) return
+        if (expectedIme != lastTargetIme) {
+            HookUtils.log("Stale recheck ignored for $expectedIme (current target is $lastTargetIme)")
+            return
+        }
         val ctx = systemContext ?: HookUtils.getSystemContext()?.also { systemContext = it } ?: return
         val currentUserId = HookUtils.getCurrentUserId()
 

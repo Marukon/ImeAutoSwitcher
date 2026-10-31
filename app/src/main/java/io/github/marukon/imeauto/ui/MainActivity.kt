@@ -108,6 +108,9 @@ class MainActivity : ComponentActivity() {
                 val aggressiveRecheck by viewModel.aggressiveRecheck.collectAsState()
                 val isModuleActive by viewModel.isModuleActive.collectAsState()
                 val selectedTab by viewModel.selectedTab.collectAsState()
+                val selectedFilter by viewModel.selectedFilter.collectAsState()
+                val usedImeFilters by viewModel.usedImeFilters.collectAsState()
+                val groupFilters by viewModel.groupFilters.collectAsState()
                 val searchQuery by viewModel.searchQuery.collectAsState()
                 val apps by viewModel.filteredApps.collectAsState()
                 val imes by viewModel.imes.collectAsState()
@@ -385,7 +388,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
-                                // Filter chips: 全部, 用户应用, 系统应用, 已自定义, 📁 分组应用
+                                // Filter chips: 全部, 用户应用, 系统应用, 已自定义, 📁 分组应用, 动态分组, 动态已选输入法
                                 item {
                                     LazyRow(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -393,38 +396,64 @@ class MainActivity : ComponentActivity() {
                                     ) {
                                         item {
                                             FilterChip(
-                                                selected = selectedTab == AppFilterTab.ALL,
-                                                onClick = { viewModel.setSelectedTab(AppFilterTab.ALL) },
+                                                selected = selectedFilter == "ALL",
+                                                onClick = { viewModel.setSelectedFilter("ALL") },
                                                 label = { Text(stringResource(R.string.tab_all)) },
                                                 colors = FilterChipDefaults.filterChipColors()
                                             )
                                         }
                                         item {
                                             FilterChip(
-                                                selected = selectedTab == AppFilterTab.USER,
-                                                onClick = { viewModel.setSelectedTab(AppFilterTab.USER) },
+                                                selected = selectedFilter == "USER",
+                                                onClick = { viewModel.setSelectedFilter("USER") },
                                                 label = { Text(stringResource(R.string.tab_user)) }
                                             )
                                         }
                                         item {
                                             FilterChip(
-                                                selected = selectedTab == AppFilterTab.SYSTEM,
-                                                onClick = { viewModel.setSelectedTab(AppFilterTab.SYSTEM) },
+                                                selected = selectedFilter == "SYSTEM",
+                                                onClick = { viewModel.setSelectedFilter("SYSTEM") },
                                                 label = { Text(stringResource(R.string.tab_system)) }
                                             )
                                         }
                                         item {
                                             FilterChip(
-                                                selected = selectedTab == AppFilterTab.CONFIGURED,
-                                                onClick = { viewModel.setSelectedTab(AppFilterTab.CONFIGURED) },
+                                                selected = selectedFilter == "CONFIGURED",
+                                                onClick = { viewModel.setSelectedFilter("CONFIGURED") },
                                                 label = { Text(stringResource(R.string.tab_configured)) }
                                             )
                                         }
                                         item {
                                             FilterChip(
-                                                selected = selectedTab == AppFilterTab.GROUPED,
-                                                onClick = { viewModel.setSelectedTab(AppFilterTab.GROUPED) },
-                                                label = { Text("📁 分组应用") }
+                                                selected = selectedFilter == "GROUPED",
+                                                onClick = { viewModel.setSelectedFilter("GROUPED") },
+                                                label = { Text("📁 全部已分组") }
+                                            )
+                                        }
+
+                                        // Dynamic Group Filter Chips
+                                        items(groupFilters, key = { "gf_${it.groupId}" }) { gf ->
+                                            val key = "GROUP:${gf.groupId}"
+                                            FilterChip(
+                                                selected = selectedFilter == key,
+                                                onClick = {
+                                                    if (selectedFilter == key) viewModel.setSelectedFilter("ALL")
+                                                    else viewModel.setSelectedFilter(key)
+                                                },
+                                                label = { Text("📁 ${gf.name} (${gf.count})") }
+                                            )
+                                        }
+
+                                        // Dynamic Selected IME Filter Chips
+                                        items(usedImeFilters, key = { "uif_${it.imeId}" }) { uif ->
+                                            val key = "IME:${uif.imeId}"
+                                            FilterChip(
+                                                selected = selectedFilter == key,
+                                                onClick = {
+                                                    if (selectedFilter == key) viewModel.setSelectedFilter("ALL")
+                                                    else viewModel.setSelectedFilter(key)
+                                                },
+                                                label = { Text("⌨️ ${uif.label} (${uif.count})") }
                                             )
                                         }
                                     }
