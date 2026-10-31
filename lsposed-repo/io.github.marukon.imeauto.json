@@ -1,0 +1,11 @@
+{
+  "name": "ImeAutoSwitcher",
+  "description": "Automatically switch default input methods based on the foreground application without background services.",
+  "scope": [
+    "system",
+    "android",
+    "io.github.marukon.imeauto"
+  ],
+  "source": "https://github.com/Marukon/ImeAutoSwitcher",
+  "releases": "https://github.com/Marukon/ImeAutoSwitcher/releases"
+}
