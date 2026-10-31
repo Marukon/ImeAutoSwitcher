@@ -10,28 +10,28 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.SuggestionChipDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,7 +54,7 @@ fun AppItemCard(
         val rule = app.assignedImeId
         when {
             rule == null -> {
-                if (app.isImeApp) "保持不变 (默认)" else "跟随默认"
+                if (app.isImeApp) "保持不变" else "跟随默认"
             }
             rule == ConfigManager.RULE_KEEP_CURRENT -> {
                 "保持不变"
@@ -63,12 +63,7 @@ fun AppItemCard(
                 val groupId = rule.removePrefix(ConfigManager.PREFIX_GROUP)
                 val group = groups.firstOrNull { it.id == groupId }
                 if (group != null) {
-                    val imeName = if (group.targetImeId == ConfigManager.RULE_KEEP_CURRENT || group.targetImeId.isEmpty()) {
-                        "保持不变"
-                    } else {
-                        allImes.firstOrNull { it.id == group.targetImeId }?.label ?: group.targetImeId
-                    }
-                    "[${group.name}] $imeName"
+                    "📁 ${group.name}"
                 } else {
                     "未知分组"
                 }
@@ -79,7 +74,12 @@ fun AppItemCard(
         }
     }
 
-    val isCustomized = app.assignedImeId != null
+    // IME apps only count as customized if explicitly assigned to another IME or group
+    val isCustomized = if (app.isImeApp) {
+        app.assignedImeId != null && app.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
+    } else {
+        app.assignedImeId != null
+    }
 
     val iconBitmap = remember(app.icon) {
         app.icon?.let { drawable ->
@@ -121,13 +121,13 @@ fun AppItemCard(
                     bitmap = iconBitmap,
                     contentDescription = app.name,
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
                 )
             } else {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center
@@ -136,21 +136,28 @@ fun AppItemCard(
                         imageVector = Icons.Default.Android,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(10.dp))
 
-            // App Name & Package Name & Badges
-            Column(modifier = Modifier.weight(1f)) {
+            // App Info: Name, Package, Badges
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center
+            ) {
                 Text(
                     text = app.name,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 15.sp
+                    ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+
                 Text(
                     text = app.packageName,
                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
@@ -159,56 +166,34 @@ fun AppItemCard(
                     overflow = TextOverflow.Ellipsis
                 )
 
+                Spacer(modifier = Modifier.height(3.dp))
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.padding(top = 2.dp)
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Type Badge
-                    SuggestionChip(
-                        onClick = {},
-                        label = {
-                            Text(
-                                text = if (app.isSystem) "系统" else "用户",
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp)
-                            )
-                        },
-                        colors = SuggestionChipDefaults.suggestionChipColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                        ),
-                        modifier = Modifier.size(width = 48.dp, height = 20.dp)
+                    AppBadge(
+                        text = if (app.isSystem) "系统" else "用户",
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     // IME special badge
                     if (app.isImeApp) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    text = "输入法",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                )
-                            },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
-                                labelColor = MaterialTheme.colorScheme.onTertiaryContainer
-                            ),
-                            modifier = Modifier.size(width = 56.dp, height = 20.dp)
+                        AppBadge(
+                            text = "输入法",
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.8f),
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
                         )
                     }
 
+                    // No-launcher badge
                     if (!app.isLaunchable) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    text = "无图标",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp)
-                                )
-                            },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
-                            ),
-                            modifier = Modifier.size(width = 56.dp, height = 20.dp)
+                        AppBadge(
+                            text = "无图标",
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer
                         )
                     }
                 }
@@ -216,42 +201,69 @@ fun AppItemCard(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            // Assigned IME Selector Chip
-            AssistChip(
+            // Assigned IME / Group Selector Pill
+            Surface(
                 onClick = onSelectImeClick,
-                label = {
+                shape = RoundedCornerShape(8.dp),
+                color = when {
+                    isCustomized -> MaterialTheme.colorScheme.primaryContainer
+                    app.isImeApp -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                },
+                contentColor = when {
+                    isCustomized -> MaterialTheme.colorScheme.onPrimaryContainer
+                    app.isImeApp -> MaterialTheme.colorScheme.onTertiaryContainer
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.widthIn(min = 60.dp, max = 130.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
                     Text(
                         text = displayRuleText,
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 12.sp
+                        ),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
-                },
-                trailingIcon = {
+                    Spacer(modifier = Modifier.width(4.dp))
                     Icon(
                         imageVector = Icons.Default.Edit,
                         contentDescription = null,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(12.dp)
                     )
-                },
-                colors = AssistChipDefaults.assistChipColors(
-                    containerColor = if (isCustomized) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else if (app.isImeApp) {
-                        MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    },
-                    labelColor = if (isCustomized) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else if (app.isImeApp) {
-                        MaterialTheme.colorScheme.onTertiaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                ),
-                shape = RoundedCornerShape(8.dp)
-            )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun AppBadge(
+    text: String,
+    containerColor: Color,
+    contentColor: Color
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(containerColor)
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            color = contentColor
+        )
     }
 }
