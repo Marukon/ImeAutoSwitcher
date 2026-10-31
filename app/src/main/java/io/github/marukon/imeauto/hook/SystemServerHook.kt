@@ -89,6 +89,36 @@ object SystemServerHook {
         if (!isImmsHookInstalled) {
             hookInputMethodManagerService(classLoader)
         }
+
+        // 4. Install defensive crash guard for ContextImpl.unbindService (ColorOS 16 / Android 16 safety)
+        hookContextImplUnbindService(classLoader)
+    }
+
+    private fun hookContextImplUnbindService(classLoader: ClassLoader) {
+        try {
+            val contextImplClass = Class.forName("android.app.ContextImpl", false, classLoader)
+            val unbindMethod = contextImplClass.getDeclaredMethod(
+                "unbindService",
+                android.content.ServiceConnection::class.java
+            )
+            module?.hook(unbindMethod)
+                ?.setPriority(XposedInterface.PRIORITY_HIGHEST)
+                ?.intercept { chain ->
+                    try {
+                        chain.proceed()
+                    } catch (e: IllegalArgumentException) {
+                        if (e.message?.contains("Service not registered") == true) {
+                            HookUtils.log("Suppressed unbindService exception to prevent system_server crash: ${e.message}")
+                            null
+                        } else {
+                            throw e
+                        }
+                    }
+                }
+            HookUtils.log("Successfully installed crash-prevention guard for ContextImpl.unbindService")
+        } catch (t: Throwable) {
+            HookUtils.logE("Failed to install unbindService crash guard", t)
+        }
     }
 
     private fun hookActivityTaskManagerService(classLoader: ClassLoader) {
@@ -637,7 +667,7 @@ object SystemServerHook {
 
             HookUtils.log("Switching IME for [$triggerPkg]: current=$currentIme -> target=$targetIme")
 
-            // 1. Write to Settings.Secure with system privileges
+            // 1. Write to Settings.Secure with system privileges (triggers official system_server IME event dispatch)
             HookUtils.putSecureStringForUser(
                 ctx.contentResolver,
                 Settings.Secure.DEFAULT_INPUT_METHOD,
@@ -645,9 +675,6 @@ object SystemServerHook {
                 currentUserId
             )
             lastTargetIme = targetIme
-
-            // 2. Direct IMMS reflection call within system_server
-            tryInvokeImmsSetInputMethod(targetIme, currentUserId)
         } finally {
             android.os.Binder.restoreCallingIdentity(token)
         }
@@ -657,50 +684,6 @@ object SystemServerHook {
             switchExecutor.schedule({
                 verifyAndEnforceIme(targetIme, "DelayedVerification")
             }, 250, TimeUnit.MILLISECONDS)
-        }
-    }
-
-    private fun tryInvokeImmsSetInputMethod(targetIme: String, userId: Int) {
-        val imms = immsInstance ?: return
-        val candidateMethodNames = listOf(
-            "setInputMethodLocked",
-            "setSelectedInputMethodAndSubtypeLocked",
-            "updateInputMethodsFromSettingsLocked"
-        )
-        for (m in imms.javaClass.declaredMethods) {
-            if (m.name in candidateMethodNames) {
-                m.isAccessible = true
-                try {
-                    val paramTypes = m.parameterTypes
-                    when (paramTypes.size) {
-                        1 -> {
-                            if (paramTypes[0] == Boolean::class.javaPrimitiveType) {
-                                m.invoke(imms, true)
-                                HookUtils.log("Invoked IMMS.${m.name}(true)")
-                                return
-                            }
-                        }
-                        2 -> {
-                            if (paramTypes[0] == String::class.java && paramTypes[1] == Int::class.javaPrimitiveType) {
-                                m.invoke(imms, targetIme, -1)
-                                HookUtils.log("Invoked IMMS.${m.name}($targetIme, -1)")
-                                return
-                            }
-                        }
-                        3 -> {
-                            if (paramTypes[0] == String::class.java &&
-                                paramTypes[1] == Int::class.javaPrimitiveType &&
-                                paramTypes[2] == Int::class.javaPrimitiveType) {
-                                m.invoke(imms, targetIme, -1, userId)
-                                HookUtils.log("Invoked IMMS.${m.name}($targetIme, -1, $userId)")
-                                return
-                            }
-                        }
-                    }
-                } catch (t: Throwable) {
-                    HookUtils.log("IMMS.${m.name} invoke attempt: ${t.message}")
-                }
-            }
         }
     }
 
@@ -724,7 +707,6 @@ object SystemServerHook {
                     expectedIme,
                     currentUserId
                 )
-                tryInvokeImmsSetInputMethod(expectedIme, currentUserId)
             }
         } catch (t: Throwable) {
             HookUtils.logE("Failed to enforce IME in recheck", t)
