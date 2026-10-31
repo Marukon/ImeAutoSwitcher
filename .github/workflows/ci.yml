@@ -56,16 +56,24 @@ jobs:
 
       - name: Collect APK Artifacts
         run: |
-          mkdir -p apks/
-          find app/build/outputs/apk/debug -name "*.apk" -exec cp {} apks/ImeAutoSwitcher-debug.apk \;
-          find app/build/outputs/apk/release -name "*.apk" -exec cp {} apks/ImeAutoSwitcher-release.apk \;
-          ls -la apks/
+          mkdir -p apks/debug apks/release
+          find app/build/outputs/apk/debug -name "*.apk" -exec cp {} apks/debug/ImeAutoSwitcher-debug.apk \;
+          find app/build/outputs/apk/release -name "*.apk" -exec cp {} apks/release/ImeAutoSwitcher-release.apk \;
+          ls -la apks/debug/
+          ls -la apks/release/
 
-      - name: Upload Artifacts
+      - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: imeauto-apks
-          path: apks/
+          name: ImeAutoSwitcher-debug
+          path: apks/debug/ImeAutoSwitcher-debug.apk
+          retention-days: 7
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImeAutoSwitcher-release
+          path: apks/release/ImeAutoSwitcher-release.apk
           retention-days: 7
 
       - name: Prune Old Artifacts on Success
