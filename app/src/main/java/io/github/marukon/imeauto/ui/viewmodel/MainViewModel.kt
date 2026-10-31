@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class AppFilterTab {
-    ALL, USER, SYSTEM, CONFIGURED, GROUPED
+    ALL, USER, SYSTEM, CONFIGURED, GROUPED, IME_APPS
 }
 
 data class UsedImeFilter(
@@ -124,9 +124,10 @@ class MainViewModel : ViewModel() {
 
             // Filter 2: Filter selection (Category, Group, or specific IME)
             val matchesFilter = when {
-                filter == "ALL" -> true
-                filter == "USER" -> !app.isSystem
-                filter == "SYSTEM" -> app.isSystem
+                filter == "ALL" -> !app.isImeApp
+                filter == "USER" -> !app.isSystem && !app.isImeApp
+                filter == "SYSTEM" -> app.isSystem && !app.isImeApp
+                filter == "IME_APPS" -> app.isImeApp
                 filter == "CONFIGURED" -> app.assignedImeId != null
                 filter == "GROUPED" -> app.assignedImeId?.startsWith(ConfigManager.PREFIX_GROUP) == true
                 filter.startsWith("GROUP:") -> {
@@ -240,6 +241,7 @@ class MainViewModel : ViewModel() {
             "SYSTEM" -> _selectedTab.value = AppFilterTab.SYSTEM
             "CONFIGURED" -> _selectedTab.value = AppFilterTab.CONFIGURED
             "GROUPED" -> _selectedTab.value = AppFilterTab.GROUPED
+            "IME_APPS" -> _selectedTab.value = AppFilterTab.IME_APPS
         }
     }
 
@@ -267,8 +269,9 @@ class MainViewModel : ViewModel() {
             }
         }
         _allApps.value = updated.sortedWith(
-            compareByDescending<AppItem> { it.assignedImeId != null }
-                .thenBy { it.name.lowercase() }
+            compareByDescending<AppItem> {
+                it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
+            }.thenBy { it.name.lowercase() }
         )
         _selectedAppForImePick.value = null
     }
@@ -295,8 +298,9 @@ class MainViewModel : ViewModel() {
         _allApps.value = _allApps.value.map { app ->
             app.copy(assignedImeId = appRules[app.packageName])
         }.sortedWith(
-            compareByDescending<AppItem> { it.assignedImeId != null }
-                .thenBy { it.name.lowercase() }
+            compareByDescending<AppItem> {
+                it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
+            }.thenBy { it.name.lowercase() }
         )
     }
 

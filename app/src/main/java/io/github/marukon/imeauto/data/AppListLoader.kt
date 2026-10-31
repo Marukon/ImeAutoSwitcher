@@ -82,10 +82,11 @@ object AppListLoader {
             )
         }
 
-        // Sort: customized first, then alphabetically by name
+        // Sort: customized first (excluding keep-current), then alphabetically by name
         result.sortedWith(
-            compareByDescending<AppItem> { it.assignedImeId != null }
-                .thenBy { it.name.lowercase() }
+            compareByDescending<AppItem> {
+                it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
+            }.thenBy { it.name.lowercase() }
         )
     }
 }
