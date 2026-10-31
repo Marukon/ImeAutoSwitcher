@@ -168,7 +168,7 @@ fun TopStatusCard(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "全局默认输入法 (基础分组)",
+                        text = "全局默认输入法",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(

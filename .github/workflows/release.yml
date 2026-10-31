@@ -23,6 +23,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up JDK 17
@@ -113,6 +114,18 @@ jobs:
               --title "${TITLE}" \
               --notes "${NOTES}"
           fi
+
+      - name: Sync Codebase to LSPosed Repo on Release Success
+        env:
+          LSP_TOKEN: ${{ secrets.LSP_REPO_TOKEN }}
+        run: |
+          echo "Release APK successfully published. Now syncing codebase to LSPosed repo..."
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add lsposed "https://${LSP_TOKEN}@github.com/Xposed-Modules-Repo/io.github.marukon.imeauto.git" || git remote set-url lsposed "https://${LSP_TOKEN}@github.com/Xposed-Modules-Repo/io.github.marukon.imeauto.git"
+          git push lsposed main:main --force
+          echo "Codebase successfully synced to LSPosed distribution repo."
 
       - name: Clean up Keystore and Build Artifacts
         if: always()
