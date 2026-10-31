@@ -82,11 +82,18 @@ object AppListLoader {
             )
         }
 
-        // Sort: customized first (excluding keep-current), then alphabetically by name
+        val collator = java.text.Collator.getInstance(java.util.Locale.getDefault()).apply {
+            strength = java.text.Collator.PRIMARY
+        }
+
+        // Sort: customized first (excluding keep-current), then by localized collation, then by packageName
         result.sortedWith(
             compareByDescending<AppItem> {
                 it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
-            }.thenBy { it.name.lowercase() }
+            }.thenComparator { a, b ->
+                val comp = collator.compare(a.name, b.name)
+                if (comp != 0) comp else a.packageName.compareTo(b.packageName)
+            }
         )
     }
 }

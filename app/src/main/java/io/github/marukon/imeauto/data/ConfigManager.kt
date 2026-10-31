@@ -13,6 +13,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.Executors
 
 object ConfigManager {
     const val ACTION_SYNC_CONFIG = "io.github.marukon.imeauto.ACTION_SYNC_CONFIG"
@@ -32,6 +33,9 @@ object ConfigManager {
     const val KEY_APP_RULES = "app_rules"
     const val KEY_GROUPS = "groups"
     const val KEY_KNOWN_IME_PACKAGES = "known_ime_packages"
+
+    private val configLock = Any()
+    private val rootSyncExecutor = Executors.newSingleThreadExecutor()
 
     @Volatile
     var isFrameworkServiceConnected: Boolean = false
@@ -145,7 +149,7 @@ object ConfigManager {
         }
     }
 
-    fun setAppRule(context: Context, packageName: String, imeId: String?) {
+    fun setAppRule(context: Context, packageName: String, imeId: String?) = synchronized(configLock) {
         val current = getAppRules(context).toMutableMap()
         if (imeId.isNullOrEmpty()) {
             current.remove(packageName)
@@ -166,7 +170,7 @@ object ConfigManager {
         }
     }
 
-    fun saveGroups(context: Context, groups: List<ImeGroup>) {
+    fun saveGroups(context: Context, groups: List<ImeGroup>) = synchronized(configLock) {
         val encoded = json.encodeToString(groups)
         getPrefs(context).edit().putString(KEY_GROUPS, encoded).apply()
         notifyHook(context)
@@ -240,7 +244,7 @@ object ConfigManager {
         return buildFullConfigJson(context)
     }
 
-    fun importConfigJson(context: Context, configJson: String): Boolean {
+    fun importConfigJson(context: Context, configJson: String): Boolean = synchronized(configLock) {
         return try {
             val map = json.decodeFromString<Map<String, String>>(configJson)
             val editor = getPrefs(context).edit()
@@ -248,7 +252,29 @@ object ConfigManager {
             map[KEY_GLOBAL_ENABLED]?.let { editor.putBoolean(KEY_GLOBAL_ENABLED, it.toBoolean()) }
             map[KEY_DEFAULT_IME]?.let { editor.putString(KEY_DEFAULT_IME, it) }
             map[KEY_AGGRESSIVE_RECHECK]?.let { editor.putBoolean(KEY_AGGRESSIVE_RECHECK, it.toBoolean()) }
-            map[KEY_APP_RULES]?.let { editor.putString(KEY_APP_RULES, it) }
+
+            val groupsList = try {
+                map[KEY_GROUPS]?.let { json.decodeFromString<List<ImeGroup>>(it) }
+            } catch (e: Exception) { null }
+
+            val rulesMap = try {
+                map[KEY_APP_RULES]?.let { json.decodeFromString<Map<String, String>>(it) }
+            } catch (e: Exception) { null }
+
+            if (rulesMap != null && groupsList != null) {
+                val groupIds = groupsList.map { it.id }.toSet()
+                // Clean dangling group references
+                val cleanedRules = rulesMap.filterValues { rule ->
+                    if (rule.startsWith(PREFIX_GROUP)) {
+                        val gId = rule.removePrefix(PREFIX_GROUP)
+                        groupIds.contains(gId)
+                    } else true
+                }
+                editor.putString(KEY_APP_RULES, json.encodeToString(cleanedRules))
+            } else {
+                map[KEY_APP_RULES]?.let { editor.putString(KEY_APP_RULES, it) }
+            }
+
             map[KEY_GROUPS]?.let { editor.putString(KEY_GROUPS, it) }
             map[KEY_KNOWN_IME_PACKAGES]?.let {
                 val list = json.decodeFromString<List<String>>(it)
@@ -291,21 +317,22 @@ object ConfigManager {
             Log.w("ConfigManager", "Broadcast deferred: ${t.message}")
         }
 
-        // 3. Root background sync (dual assurance)
-        Thread {
+        // 3. Root background sync (queued sequentially, atomic write & SELinux restorecon)
+        rootSyncExecutor.execute {
             try {
                 val b64 = Base64.encodeToString(fullJson.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
                 val proc = Runtime.getRuntime().exec("su")
                 proc.outputStream.bufferedWriter().use { writer ->
                     writer.write("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS\n")
                     writer.write("settings put global $SETTINGS_CONFIG_KEY \"$(echo '$b64' | base64 -d)\"\n")
-                    writer.write("echo \"$b64\" | base64 -d > $SYSTEM_CONFIG_PATH\n")
+                    writer.write("echo \"$b64\" | base64 -d > $SYSTEM_CONFIG_PATH.tmp && mv -f $SYSTEM_CONFIG_PATH.tmp $SYSTEM_CONFIG_PATH\n")
                     writer.write("chmod 644 $SYSTEM_CONFIG_PATH\n")
+                    writer.write("restorecon $SYSTEM_CONFIG_PATH 2>/dev/null || true\n")
                     writer.write("exit\n")
                     writer.flush()
                 }
                 proc.waitFor()
             } catch (ignored: Throwable) {}
-        }.start()
+        }
     }
 }
