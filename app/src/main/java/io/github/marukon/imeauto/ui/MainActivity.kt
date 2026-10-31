@@ -255,24 +255,7 @@ class MainActivity : ComponentActivity() {
 
                                         HorizontalDivider()
 
-                                        // 4. Group Manager
-                                        DropdownMenuItem(
-                                            text = { Text("应用分组管理 (批量切换)") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = Icons.Default.Folder,
-                                                    contentDescription = null
-                                                )
-                                            },
-                                            onClick = {
-                                                showMenu = false
-                                                showGroupManagerDialog = true
-                                            }
-                                        )
-
-                                        HorizontalDivider()
-
-                                        // 5. Export Backup
+                                        // 4. Export Backup
                                         DropdownMenuItem(
                                             text = { Text("导出配置 (备份)") },
                                             leadingIcon = {
@@ -428,6 +411,13 @@ class MainActivity : ComponentActivity() {
                                                 selected = selectedFilter == "GROUPED",
                                                 onClick = { viewModel.setSelectedFilter("GROUPED") },
                                                 label = { Text("📁 全部已分组") }
+                                            )
+                                        }
+                                        item {
+                                            FilterChip(
+                                                selected = selectedFilter == "IME_APPS",
+                                                onClick = { viewModel.setSelectedFilter("IME_APPS") },
+                                                label = { Text("⌨️ 输入法应用") }
                                             )
                                         }
 

@@ -3,6 +3,13 @@ name: Sync to LSPosed Repository
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '.github/workflows/**'
+      - '**.md'
+      - 'art/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 concurrency:
