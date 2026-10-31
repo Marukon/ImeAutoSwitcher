@@ -37,20 +37,49 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.marukon.imeauto.data.ConfigManager
 import io.github.marukon.imeauto.data.model.AppItem
+import io.github.marukon.imeauto.data.model.ImeGroup
 import io.github.marukon.imeauto.data.model.ImeItem
 
 @Composable
 fun AppItemCard(
     app: AppItem,
     allImes: List<ImeItem>,
+    groups: List<ImeGroup>,
     onSelectImeClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val assignedIme = remember(app.assignedImeId, allImes) {
-        if (app.assignedImeId == null) null
-        else allImes.firstOrNull { it.id == app.assignedImeId }
+    val displayRuleText = remember(app.assignedImeId, app.isImeApp, allImes, groups) {
+        val rule = app.assignedImeId
+        when {
+            rule == null -> {
+                if (app.isImeApp) "保持不变 (默认)" else "跟随默认"
+            }
+            rule == ConfigManager.RULE_KEEP_CURRENT -> {
+                "保持不变"
+            }
+            rule.startsWith(ConfigManager.PREFIX_GROUP) -> {
+                val groupId = rule.removePrefix(ConfigManager.PREFIX_GROUP)
+                val group = groups.firstOrNull { it.id == groupId }
+                if (group != null) {
+                    val imeName = if (group.targetImeId == ConfigManager.RULE_KEEP_CURRENT || group.targetImeId.isEmpty()) {
+                        "保持不变"
+                    } else {
+                        allImes.firstOrNull { it.id == group.targetImeId }?.label ?: group.targetImeId
+                    }
+                    "[${group.name}] $imeName"
+                } else {
+                    "未知分组"
+                }
+            }
+            else -> {
+                allImes.firstOrNull { it.id == rule }?.label ?: rule
+            }
+        }
     }
+
+    val isCustomized = app.assignedImeId != null
 
     val iconBitmap = remember(app.icon) {
         app.icon?.let { drawable ->
@@ -71,7 +100,11 @@ fun AppItemCard(
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = if (isCustomized) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier.fillMaxWidth()
@@ -130,6 +163,7 @@ fun AppItemCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.padding(top = 2.dp)
                 ) {
+                    // Type Badge
                     SuggestionChip(
                         onClick = {},
                         label = {
@@ -143,6 +177,24 @@ fun AppItemCard(
                         ),
                         modifier = Modifier.size(width = 48.dp, height = 20.dp)
                     )
+
+                    // IME special badge
+                    if (app.isImeApp) {
+                        SuggestionChip(
+                            onClick = {},
+                            label = {
+                                Text(
+                                    text = "输入法",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                )
+                            },
+                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
+                                labelColor = MaterialTheme.colorScheme.onTertiaryContainer
+                            ),
+                            modifier = Modifier.size(width = 56.dp, height = 20.dp)
+                        )
+                    }
 
                     if (!app.isLaunchable) {
                         SuggestionChip(
@@ -169,7 +221,7 @@ fun AppItemCard(
                 onClick = onSelectImeClick,
                 label = {
                     Text(
-                        text = assignedIme?.label ?: "跟随默认",
+                        text = displayRuleText,
                         style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -183,13 +235,17 @@ fun AppItemCard(
                     )
                 },
                 colors = AssistChipDefaults.assistChipColors(
-                    containerColor = if (assignedIme != null) {
+                    containerColor = if (isCustomized) {
                         MaterialTheme.colorScheme.primaryContainer
+                    } else if (app.isImeApp) {
+                        MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
                     } else {
                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                     },
-                    labelColor = if (assignedIme != null) {
+                    labelColor = if (isCustomized) {
                         MaterialTheme.colorScheme.onPrimaryContainer
+                    } else if (app.isImeApp) {
+                        MaterialTheme.colorScheme.onTertiaryContainer
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     }

@@ -5,19 +5,19 @@
     <!-- UI Strings -->
     <string name="module_status_active">模块已激活 (LSPosed 102)</string>
     <string name="module_status_inactive">模块未激活或未勾选系统框架作用域</string>
-    <string name="global_switch_title">自动切换服务</string>
-    <string name="global_switch_subtitle">监听前台应用切换并无感匹配输入法</string>
+    <string name="global_enabled_title">自动切换服务</string>
+    <string name="global_enabled_desc">监听前台应用切换并无感匹配输入法</string>
     <string name="default_ime_title">默认回退输入法</string>
     <string name="default_ime_subtitle">未单独配置的应用将自动使用此输入法</string>
-    <string name="recheck_title">双重输入复检机制</string>
-    <string name="recheck_subtitle">在焦点获取与输入建立时实时复检，防止被系统重置</string>
+    <string name="aggressive_recheck_title">双重输入焦点复检</string>
+    <string name="aggressive_recheck_desc">在焦点获取与输入建立时实时复检，防止被系统重置</string>
+    <string name="hide_no_launcher_title">隐藏无桌面图标应用</string>
 
     <!-- Filter Strings -->
     <string name="tab_all">全部</string>
     <string name="tab_user">用户应用</string>
     <string name="tab_system">系统应用</string>
     <string name="tab_configured">已自定义</string>
-    <string name="filter_hide_no_launcher">隐藏无桌面图标应用</string>
     <string name="search_hint">搜索应用名称或包名…</string>
 
     <!-- Dialog Strings -->

@@ -15,6 +15,9 @@ import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 object SystemServerHook {
 
@@ -24,6 +27,7 @@ object SystemServerHook {
     private var systemContext: Context? = null
     private var immsInstance: Any? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val switchExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
 
     @Volatile
     private var isForegroundHookInstalled = false
@@ -54,6 +58,8 @@ object SystemServerHook {
     private var aggressiveRecheck = true
 
     private val appRules = ConcurrentHashMap<String, String>()
+    private val groupsMap = ConcurrentHashMap<String, String>()
+    private val knownImePackages = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var currentForegroundPackage: String? = null
@@ -281,9 +287,12 @@ object SystemServerHook {
                         if (!inputPkg.isNullOrEmpty()) {
                             handleForegroundAppChanged(inputPkg)
                         } else if (isGlobalEnabled && aggressiveRecheck) {
-                            val expectedIme = getTargetImeForPackage(currentForegroundPackage)
-                            if (!expectedIme.isNullOrEmpty()) {
-                                verifyAndEnforceIme(expectedIme, "${targetClass.simpleName}.${m.name}")
+                            val pkg = currentForegroundPackage
+                            switchExecutor.execute {
+                                val expectedIme = getTargetImeForPackage(pkg)
+                                if (!expectedIme.isNullOrEmpty()) {
+                                    verifyAndEnforceIme(expectedIme, "${targetClass.simpleName}.${m.name}")
+                                }
                             }
                         }
                         chain.proceed()
@@ -432,6 +441,38 @@ object SystemServerHook {
                     }
                 }
             }
+            if (root.has(ConfigManager.KEY_GROUPS)) {
+                val groupsRaw = root.get(ConfigManager.KEY_GROUPS)
+                val groupsArr = when (groupsRaw) {
+                    is org.json.JSONArray -> groupsRaw
+                    is String -> org.json.JSONArray(groupsRaw)
+                    else -> null
+                }
+                if (groupsArr != null) {
+                    groupsMap.clear()
+                    for (i in 0 until groupsArr.length()) {
+                        val item = groupsArr.getJSONObject(i)
+                        val id = item.optString("id")
+                        val ime = item.optString("targetImeId")
+                        if (id.isNotEmpty()) {
+                            groupsMap[id] = ime
+                        }
+                    }
+                }
+            }
+            if (root.has(ConfigManager.KEY_KNOWN_IME_PACKAGES)) {
+                val imeRaw = root.get(ConfigManager.KEY_KNOWN_IME_PACKAGES)
+                val imeArr = when (imeRaw) {
+                    is org.json.JSONArray -> imeRaw
+                    is String -> org.json.JSONArray(imeRaw)
+                    else -> null
+                }
+                if (imeArr != null) {
+                    for (i in 0 until imeArr.length()) {
+                        knownImePackages.add(imeArr.getString(i))
+                    }
+                }
+            }
             isConfigLoaded = true
             HookUtils.log("Config successfully applied from [$source]: ${appRules.size} rules, default=$defaultImeId, enabled=$isGlobalEnabled")
             currentForegroundPackage?.let { handleForegroundAppChanged(it, force = true) }
@@ -488,6 +529,24 @@ object SystemServerHook {
             }
         }
 
+        val groupsJson = intent.getStringExtra(ConfigManager.KEY_GROUPS)
+        if (!groupsJson.isNullOrEmpty()) {
+            try {
+                val arr = org.json.JSONArray(groupsJson)
+                groupsMap.clear()
+                for (i in 0 until arr.length()) {
+                    val item = arr.getJSONObject(i)
+                    val id = item.optString("id")
+                    val ime = item.optString("targetImeId")
+                    if (id.isNotEmpty()) {
+                        groupsMap[id] = ime
+                    }
+                }
+            } catch (e: Exception) {
+                HookUtils.logE("Failed to parse groups JSON", e)
+            }
+        }
+
         currentForegroundPackage?.let { handleForegroundAppChanged(it, force = true) }
     }
 
@@ -511,16 +570,53 @@ object SystemServerHook {
             return
         }
 
-        applyImeSwitch(targetIme, packageName)
+        switchExecutor.execute {
+            applyImeSwitch(targetIme, packageName)
+        }
     }
 
     private fun getTargetImeForPackage(pkg: String?): String? {
         if (pkg.isNullOrEmpty()) return null
         val mapped = appRules[pkg]
         if (!mapped.isNullOrEmpty()) {
+            if (mapped == ConfigManager.RULE_KEEP_CURRENT) {
+                return null // Explicitly configured to keep current IME
+            }
+            if (mapped.startsWith(ConfigManager.PREFIX_GROUP)) {
+                val groupId = mapped.removePrefix(ConfigManager.PREFIX_GROUP)
+                val targetIme = groupsMap[groupId]
+                if (targetIme == ConfigManager.RULE_KEEP_CURRENT || targetIme.isNullOrEmpty()) {
+                    return null // Group configured to keep current
+                }
+                return targetIme
+            }
             return mapped
         }
+
+        // Default behavior: IME apps default to keep current IME to prevent switching loops/glitches
+        if (isImePackage(pkg)) {
+            HookUtils.log("Package [$pkg] is an IME app, keeping current IME by default")
+            return null
+        }
+
         return defaultImeId.ifEmpty { null }
+    }
+
+    private fun isImePackage(pkg: String): Boolean {
+        if (knownImePackages.contains(pkg)) return true
+        val ctx = systemContext ?: HookUtils.getSystemContext() ?: return false
+        return try {
+            val intent = Intent("android.view.InputMethod").setPackage(pkg)
+            val services = ctx.packageManager.queryIntentServices(intent, android.content.pm.PackageManager.MATCH_ALL)
+            if (services.isNotEmpty()) {
+                knownImePackages.add(pkg)
+                true
+            } else {
+                false
+            }
+        } catch (t: Throwable) {
+            false
+        }
     }
 
     private fun applyImeSwitch(targetIme: String, triggerPkg: String) {
@@ -556,11 +652,11 @@ object SystemServerHook {
             android.os.Binder.restoreCallingIdentity(token)
         }
 
-        // 3. Post-Switch Delayed Recheck
+        // 3. Post-Switch Delayed Recheck asynchronously via switchExecutor
         if (aggressiveRecheck) {
-            mainHandler.postDelayed({
+            switchExecutor.schedule({
                 verifyAndEnforceIme(targetIme, "DelayedVerification")
-            }, 250)
+            }, 250, TimeUnit.MILLISECONDS)
         }
     }
 

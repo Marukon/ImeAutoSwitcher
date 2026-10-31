@@ -1,9 +1,11 @@
 package io.github.marukon.imeauto.data
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.provider.Settings
+import android.view.inputmethod.InputMethod
 import android.view.inputmethod.InputMethodManager
 import io.github.marukon.imeauto.data.model.AppItem
 import io.github.marukon.imeauto.data.model.ImeItem
@@ -32,11 +34,28 @@ object AppListLoader {
         list.sortedByDescending { it.isDefault }
     }
 
+    suspend fun loadAllImePackageNames(context: Context): Set<String> = withContext(Dispatchers.IO) {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        val pm = context.packageManager
+
+        val fromImm = imm.inputMethodList.map { it.packageName }.toSet()
+        val fromQuery = try {
+            val intent = Intent(InputMethod.SERVICE_INTERFACE)
+            pm.queryIntentServices(intent, PackageManager.MATCH_ALL or PackageManager.GET_META_DATA)
+                .map { it.serviceInfo.packageName }
+                .toSet()
+        } catch (t: Throwable) {
+            emptySet()
+        }
+        fromImm + fromQuery
+    }
+
     suspend fun loadInstalledApps(
         context: Context,
         appRules: Map<String, String>
     ): List<AppItem> = withContext(Dispatchers.IO) {
         val pm = context.packageManager
+        val imePackages = loadAllImePackageNames(context)
         val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
 
         val result = mutableListOf<AppItem>()
@@ -48,6 +67,7 @@ object AppListLoader {
             val isLaunchable = pm.getLaunchIntentForPackage(info.packageName) != null
             val appName = info.loadLabel(pm).toString()
             val icon = info.loadIcon(pm)
+            val isIme = imePackages.contains(info.packageName)
 
             result.add(
                 AppItem(
@@ -55,6 +75,7 @@ object AppListLoader {
                     packageName = info.packageName,
                     isSystem = isSystem,
                     isLaunchable = isLaunchable,
+                    isImeApp = isIme,
                     assignedImeId = appRules[info.packageName],
                     icon = icon
                 )
