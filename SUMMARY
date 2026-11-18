@@ -1,0 +1,1 @@
+Android 应用感知输入法自动无感切换模块，基于 system_server 事件驱动与 IMMS 同步加锁切换实现零后台常驻、毫秒级无感切换，支持应用分组批量管理、手动切换会话保护与跨应用切换后剪贴板变更补发（需 LibXposed API 102+，已在 ColorOS Android 16 / 17 实测）。
