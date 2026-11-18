@@ -1,5 +1,6 @@
 package io.github.marukon.imeauto.hook
 
+import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.Context
 import android.provider.Settings
@@ -170,6 +171,30 @@ object HookUtils {
             }
         }
         return null
+    }
+
+    fun normalizeImeId(imeId: String?): String? {
+        if (imeId.isNullOrEmpty()) return null
+        return ComponentName.unflattenFromString(imeId)?.flattenToShortString() ?: imeId
+    }
+
+    fun isImeEnabledInSecureSettings(resolver: ContentResolver, imeId: String, userId: Int): Boolean {
+        val enabledStr = getSecureStringForUser(resolver, Settings.Secure.ENABLED_INPUT_METHODS, userId)
+        if (enabledStr.isNullOrEmpty()) return false
+        val normalizedTarget = normalizeImeId(imeId) ?: imeId
+        return enabledStr.split(':').any { entry ->
+            val candidate = entry.substringBefore(';')
+            candidate == imeId || normalizeImeId(candidate) == normalizedTarget
+        }
+    }
+
+    fun getPackageNameForUid(context: Context?, uid: Int): String? {
+        if (context == null || uid <= 0) return null
+        return try {
+            context.packageManager.getPackagesForUid(uid)?.firstOrNull()
+        } catch (ignored: Throwable) {
+            null
+        }
     }
 
     fun findFirstMethodNamed(clazz: Class<*>, name: String): Method? {

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,6 +41,7 @@ fun ImeSelectDialog(
     currentSelectedId: String?,
     isImeApp: Boolean = false,
     allowDefaultOption: Boolean,
+    allowFollowSystemDefault: Boolean = false,
     imes: List<ImeItem>,
     groups: List<ImeGroup> = emptyList(),
     onManageGroupsClick: (() -> Unit)? = null,
@@ -58,8 +60,38 @@ fun ImeSelectDialog(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 380.dp)
                     .padding(vertical = 4.dp)
             ) {
+                if (allowFollowSystemDefault) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectIme("") }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = currentSelectedId.isNullOrEmpty(),
+                                onClick = { onSelectIme("") }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "跟随系统当前默认",
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium)
+                                )
+                                Text(
+                                    text = "自动识别系统当前默认输入法作为回退目标",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                }
                 if (allowDefaultOption) {
                     // Option 1: Follow Global Default
                     item {

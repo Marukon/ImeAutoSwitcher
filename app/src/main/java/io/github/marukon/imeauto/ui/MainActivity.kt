@@ -68,6 +68,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import io.github.marukon.imeauto.BuildConfig
 import io.github.marukon.imeauto.R
 import io.github.marukon.imeauto.data.ConfigManager
 import io.github.marukon.imeauto.ui.components.AboutDialog
@@ -76,7 +77,6 @@ import io.github.marukon.imeauto.ui.components.GroupManagerDialog
 import io.github.marukon.imeauto.ui.components.ImeSelectDialog
 import io.github.marukon.imeauto.ui.components.TopStatusCard
 import io.github.marukon.imeauto.ui.theme.ImeAutoSwitcherTheme
-import io.github.marukon.imeauto.ui.viewmodel.AppFilterTab
 import io.github.marukon.imeauto.ui.viewmodel.MainViewModel
 
 class MainActivity : ComponentActivity() {
@@ -86,7 +86,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.checkModuleStatus(this)
-        ConfigManager.notifyHook(this)
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -107,7 +106,6 @@ class MainActivity : ComponentActivity() {
                 val hideLauncherIcon by viewModel.hideLauncherIcon.collectAsState()
                 val aggressiveRecheck by viewModel.aggressiveRecheck.collectAsState()
                 val isModuleActive by viewModel.isModuleActive.collectAsState()
-                val selectedTab by viewModel.selectedTab.collectAsState()
                 val selectedFilter by viewModel.selectedFilter.collectAsState()
                 val usedImeFilters by viewModel.usedImeFilters.collectAsState()
                 val groupFilters by viewModel.groupFilters.collectAsState()
@@ -165,7 +163,16 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val defaultImeLabel = remember(defaultImeId, imes) {
-                    imes.firstOrNull { it.id == defaultImeId }?.label ?: defaultImeId
+                    if (defaultImeId.isEmpty()) {
+                        val sysDefaultLabel = imes.firstOrNull { it.isDefault }?.label
+                        if (!sysDefaultLabel.isNullOrEmpty()) {
+                            "跟随系统当前默认 (当前: $sysDefaultLabel)"
+                        } else {
+                            "跟随系统当前默认"
+                        }
+                    } else {
+                        imes.firstOrNull { it.id == defaultImeId }?.label ?: defaultImeId
+                    }
                 }
 
                 Scaffold(
@@ -178,7 +185,7 @@ class MainActivity : ComponentActivity() {
                                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
-                                        text = "Modern LSPosed API 102 · v1.1.0",
+                                        text = "Modern LSPosed API 102 · v${BuildConfig.VERSION_NAME}",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -239,7 +246,14 @@ class MainActivity : ComponentActivity() {
                                         // 3. Aggressive recheck
                                         DropdownMenuItem(
                                             text = {
-                                                Text(stringResource(R.string.aggressive_recheck_title))
+                                                Column {
+                                                    Text(stringResource(R.string.aggressive_recheck_title))
+                                                    Text(
+                                                        text = stringResource(R.string.aggressive_recheck_desc),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
                                             },
                                             trailingIcon = {
                                                 Checkbox(
@@ -515,6 +529,7 @@ class MainActivity : ComponentActivity() {
                                 title = stringResource(R.string.default_ime_title),
                                 currentSelectedId = defaultImeId,
                                 allowDefaultOption = false,
+                                allowFollowSystemDefault = true,
                                 imes = imes,
                                 onSelectIme = { imeId ->
                                     if (imeId != null) {

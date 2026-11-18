@@ -168,11 +168,11 @@ fun TopStatusCard(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "全局默认输入法",
+                        text = stringResource(R.string.default_ime_title),
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = defaultImeLabel.ifEmpty { "未设置，将使用当前系统默认" },
+                        text = defaultImeLabel.ifEmpty { "跟随系统当前默认" },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )

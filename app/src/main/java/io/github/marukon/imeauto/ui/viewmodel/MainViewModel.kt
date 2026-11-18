@@ -15,10 +15,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-enum class AppFilterTab {
-    ALL, USER, SYSTEM, CONFIGURED, GROUPED, IME_APPS
-}
-
 data class UsedImeFilter(
     val imeId: String,
     val label: String,
@@ -36,7 +32,6 @@ class MainViewModel : ViewModel() {
     private val _allApps = MutableStateFlow<List<AppItem>>(emptyList())
     private val _imes = MutableStateFlow<List<ImeItem>>(emptyList())
     private val _groups = MutableStateFlow<List<ImeGroup>>(emptyList())
-    private val _selectedTab = MutableStateFlow(AppFilterTab.ALL)
     private val _selectedFilter = MutableStateFlow("ALL")
     private val _hideNoLauncher = MutableStateFlow(true)
     private val _hideLauncherIcon = MutableStateFlow(false)
@@ -49,7 +44,7 @@ class MainViewModel : ViewModel() {
     private val _defaultImeId = MutableStateFlow("")
     val defaultImeId: StateFlow<String> = _defaultImeId
 
-    private val _aggressiveRecheck = MutableStateFlow(true)
+    private val _aggressiveRecheck = MutableStateFlow(false)
     val aggressiveRecheck: StateFlow<Boolean> = _aggressiveRecheck
 
     private val _isModuleActive = MutableStateFlow(false)
@@ -61,7 +56,6 @@ class MainViewModel : ViewModel() {
     private val _isPickingDefaultIme = MutableStateFlow(false)
     val isPickingDefaultIme: StateFlow<Boolean> = _isPickingDefaultIme
 
-    val selectedTab: StateFlow<AppFilterTab> = _selectedTab
     val selectedFilter: StateFlow<String> = _selectedFilter
     val hideNoLauncher: StateFlow<Boolean> = _hideNoLauncher
     val hideLauncherIcon: StateFlow<Boolean> = _hideLauncherIcon
@@ -95,12 +89,7 @@ class MainViewModel : ViewModel() {
         counts.map { (imeId, count) ->
             val label = imes.firstOrNull { it.id == imeId }?.label ?: imeId
             UsedImeFilter(imeId, label, count)
-        }.sortedByDescending { it.count }.also { list ->
-            val cur = _selectedFilter.value
-            if (cur.startsWith("IME:") && list.none { "IME:${it.imeId}" == cur }) {
-                _selectedFilter.value = "ALL"
-            }
-        }
+        }.sortedByDescending { it.count }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val groupFilters: StateFlow<List<GroupFilterItem>> = combine(
@@ -113,6 +102,16 @@ class MainViewModel : ViewModel() {
             GroupFilterItem(group.id, group.name, count)
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private fun isEffectiveCustomRule(rule: String?, groupMap: Map<String, String>): Boolean {
+        if (rule.isNullOrEmpty() || rule == ConfigManager.RULE_KEEP_CURRENT) return false
+        if (rule.startsWith(ConfigManager.PREFIX_GROUP)) {
+            val gid = rule.removePrefix(ConfigManager.PREFIX_GROUP)
+            val target = groupMap[gid]
+            return !target.isNullOrEmpty() && target != ConfigManager.RULE_KEEP_CURRENT
+        }
+        return true
+    }
 
     val filteredApps: StateFlow<List<AppItem>> = combine(
         _allApps,
@@ -133,13 +132,7 @@ class MainViewModel : ViewModel() {
                 filter == "USER" -> !app.isSystem && !app.isImeApp
                 filter == "SYSTEM" -> app.isSystem && !app.isImeApp
                 filter == "IME_APPS" -> app.isImeApp
-                filter == "CONFIGURED" -> {
-                    if (app.isImeApp) {
-                        app.assignedImeId != null && app.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
-                    } else {
-                        app.assignedImeId != null
-                    }
-                }
+                filter == "CONFIGURED" -> isEffectiveCustomRule(app.assignedImeId, groupMap)
                 filter == "GROUPED" -> app.assignedImeId?.startsWith(ConfigManager.PREFIX_GROUP) == true
                 filter.startsWith("GROUP:") -> {
                     val gid = filter.removePrefix("GROUP:")
@@ -178,8 +171,16 @@ class MainViewModel : ViewModel() {
         _hideLauncherIcon.value = ConfigManager.isLauncherIconHidden(context)
         _isModuleActive.value = ConfigManager.isModuleActive(context)
 
+        val appContext = context.applicationContext ?: context
+        viewModelScope.launch {
+            ConfigManager.frameworkConnectedFlow.collect { connected ->
+                if (connected || !_isModuleActive.value) {
+                    _isModuleActive.value = ConfigManager.isModuleActive(appContext)
+                }
+            }
+        }
+
         loadData(context)
-        ConfigManager.notifyHook(context)
     }
 
     fun checkModuleStatus(context: Context) {
@@ -189,25 +190,30 @@ class MainViewModel : ViewModel() {
     fun loadData(context: Context) {
         viewModelScope.launch {
             _isLoading.value = true
+            _isModuleActive.value = ConfigManager.isModuleActive(context)
             val imes = AppListLoader.loadInstalledImes(context)
             _imes.value = imes
-            _groups.value = ConfigManager.getGroups(context)
+            val groups = ConfigManager.getGroups(context)
+            _groups.value = groups
             _hideLauncherIcon.value = ConfigManager.isLauncherIconHidden(context)
 
             // Sync known IME packages to ConfigManager so system_server gets them
             val imePackages = AppListLoader.loadAllImePackageNames(context)
-            ConfigManager.setKnownImePackages(context, imePackages)
+            ConfigManager.setKnownImePackages(context, imePackages, syncNow = false)
 
-            // If default IME not yet set in config or refers to an uninstalled IME, automatically sync to system active IME
-            val currentSystemDefault = imes.firstOrNull { it.isDefault }?.id
-            if (currentSystemDefault != null && (_defaultImeId.value.isEmpty() || !imes.any { it.id == _defaultImeId.value })) {
-                _defaultImeId.value = currentSystemDefault
-                ConfigManager.setDefaultIme(context, currentSystemDefault)
+            // If a fixed default IME was uninstalled, reset to follow system default ("")
+            val configuredDefault = _defaultImeId.value
+            if (configuredDefault.isNotEmpty() && imes.none { it.id == configuredDefault }) {
+                _defaultImeId.value = ""
+                ConfigManager.setDefaultIme(context, "")
+            } else {
+                ConfigManager.notifyHook(context)
             }
 
             val appRules = ConfigManager.getAppRules(context)
             val apps = AppListLoader.loadInstalledApps(context, appRules)
-            _allApps.value = apps
+            _allApps.value = sortAppList(apps, groups)
+            validateSelectedFilter()
             _isLoading.value = false
         }
     }
@@ -237,20 +243,30 @@ class MainViewModel : ViewModel() {
         ConfigManager.setHideLauncherIcon(context, hide)
     }
 
-    fun setSelectedTab(tab: AppFilterTab) {
-        _selectedTab.value = tab
-        _selectedFilter.value = tab.name
-    }
-
     fun setSelectedFilter(filter: String) {
         _selectedFilter.value = filter
-        when (filter) {
-            "ALL" -> _selectedTab.value = AppFilterTab.ALL
-            "USER" -> _selectedTab.value = AppFilterTab.USER
-            "SYSTEM" -> _selectedTab.value = AppFilterTab.SYSTEM
-            "CONFIGURED" -> _selectedTab.value = AppFilterTab.CONFIGURED
-            "GROUPED" -> _selectedTab.value = AppFilterTab.GROUPED
-            "IME_APPS" -> _selectedTab.value = AppFilterTab.IME_APPS
+    }
+
+    private fun validateSelectedFilter() {
+        val cur = _selectedFilter.value
+        if (cur.startsWith("GROUP:")) {
+            val gid = cur.removePrefix("GROUP:")
+            if (_groups.value.none { it.id == gid }) {
+                _selectedFilter.value = "ALL"
+            }
+        } else if (cur.startsWith("IME:")) {
+            val targetIme = cur.removePrefix("IME:")
+            val groupMap = _groups.value.associate { it.id to it.targetImeId }
+            val stillUsed = _allApps.value.any { app ->
+                val rule = app.assignedImeId ?: return@any false
+                if (rule == targetIme) true
+                else if (rule.startsWith(ConfigManager.PREFIX_GROUP)) {
+                    groupMap[rule.removePrefix(ConfigManager.PREFIX_GROUP)] == targetIme
+                } else false
+            }
+            if (!stillUsed) {
+                _selectedFilter.value = "ALL"
+            }
         }
     }
 
@@ -270,14 +286,17 @@ class MainViewModel : ViewModel() {
         strength = java.text.Collator.PRIMARY
     }
 
-    private fun sortAppList(list: List<AppItem>): List<AppItem> = list.sortedWith(
-        compareByDescending<AppItem> {
-            it.assignedImeId != null && it.assignedImeId != ConfigManager.RULE_KEEP_CURRENT
-        }.thenComparator { a, b ->
-            val comp = appListCollator.compare(a.name, b.name)
-            if (comp != 0) comp else a.packageName.compareTo(b.packageName)
-        }
-    )
+    private fun sortAppList(list: List<AppItem>, groups: List<ImeGroup> = _groups.value): List<AppItem> {
+        val groupMap = groups.associate { it.id to it.targetImeId }
+        return list.sortedWith(
+            compareByDescending<AppItem> {
+                isEffectiveCustomRule(it.assignedImeId, groupMap)
+            }.thenComparator { a, b ->
+                val comp = appListCollator.compare(a.name, b.name)
+                if (comp != 0) comp else a.packageName.compareTo(b.packageName)
+            }
+        )
+    }
 
     fun updateAppIme(context: Context, packageName: String, imeId: String?) {
         ConfigManager.setAppRule(context, packageName, imeId)
@@ -291,6 +310,7 @@ class MainViewModel : ViewModel() {
             }
         }
         _allApps.value = sortAppList(updated)
+        validateSelectedFilter()
         _selectedAppForImePick.value = null
     }
 
@@ -301,7 +321,10 @@ class MainViewModel : ViewModel() {
 
     fun updateGroup(context: Context, group: ImeGroup) {
         ConfigManager.updateGroup(context, group)
-        _groups.value = ConfigManager.getGroups(context)
+        val updatedGroups = ConfigManager.getGroups(context)
+        _groups.value = updatedGroups
+        _allApps.value = sortAppList(_allApps.value, updatedGroups)
+        validateSelectedFilter()
     }
 
     fun deleteGroup(context: Context, groupId: String) {
@@ -309,14 +332,16 @@ class MainViewModel : ViewModel() {
             setSelectedFilter("ALL")
         }
         ConfigManager.deleteGroup(context, groupId)
-        _groups.value = ConfigManager.getGroups(context)
+        val updatedGroups = ConfigManager.getGroups(context)
+        _groups.value = updatedGroups
 
         // Re-evaluate assigned rules for affected apps
         val appRules = ConfigManager.getAppRules(context)
         val updated = _allApps.value.map { app ->
             app.copy(assignedImeId = appRules[app.packageName])
         }
-        _allApps.value = sortAppList(updated)
+        _allApps.value = sortAppList(updated, updatedGroups)
+        validateSelectedFilter()
     }
 
     fun exportConfig(context: Context): String {

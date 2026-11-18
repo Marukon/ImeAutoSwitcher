@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -176,7 +177,9 @@ fun GroupManagerDialog(
     // Sub-dialog: Create new group
     if (showCreateDialog) {
         var newName by remember { mutableStateOf("") }
-        var selectedImeId by remember { mutableStateOf(allImes.firstOrNull()?.id ?: "") }
+        var selectedImeId by remember {
+            mutableStateOf(allImes.firstOrNull()?.id ?: ConfigManager.RULE_KEEP_CURRENT)
+        }
 
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
@@ -194,26 +197,38 @@ fun GroupManagerDialog(
                         text = "选择初始目标输入法：",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    LazyColumn(modifier = Modifier.height(160.dp)) {
+                    LazyColumn(modifier = Modifier.height(180.dp)) {
                         item {
-                            Text(
-                                text = "保持当前不变",
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { selectedImeId = ConfigManager.RULE_KEEP_CURRENT }
-                                    .padding(vertical = 6.dp),
-                                color = if (selectedImeId == ConfigManager.RULE_KEEP_CURRENT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = selectedImeId == ConfigManager.RULE_KEEP_CURRENT,
+                                    onClick = { selectedImeId = ConfigManager.RULE_KEEP_CURRENT }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(text = "保持当前不变")
+                            }
                         }
                         items(allImes, key = { it.id }) { ime ->
-                            Text(
-                                text = ime.label,
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { selectedImeId = ime.id }
-                                    .padding(vertical = 6.dp),
-                                color = if (selectedImeId == ime.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = selectedImeId == ime.id,
+                                    onClick = { selectedImeId = ime.id }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(text = ime.label)
+                            }
                         }
                     }
                 }

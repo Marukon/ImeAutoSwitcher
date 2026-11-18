@@ -9,6 +9,7 @@ import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import io.github.marukon.imeauto.data.model.ImeGroup
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.nio.charset.StandardCharsets
@@ -39,13 +40,22 @@ object ConfigManager {
 
     @Volatile
     var isFrameworkServiceConnected: Boolean = false
+        set(value) {
+            field = value
+            frameworkConnectedFlow.value = value
+        }
+    val frameworkConnectedFlow = MutableStateFlow(false)
     var frameworkName: String = ""
     var frameworkVersion: String = ""
+
+    // Volatile backing field prevents R8 from constant-folding/inlining isSelfHooked() in release builds
+    @Volatile
+    private var selfHookFallback = false
 
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
-        prettyPrint = true
+        prettyPrint = false
     }
 
     fun getPrefs(context: Context): SharedPreferences {
@@ -63,8 +73,9 @@ object ConfigManager {
 
         if (context != null) {
             try {
+                val bootCount = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, -1)
                 val flag = Settings.Global.getString(context.contentResolver, ACTIVE_FLAG_KEY)
-                if (flag == "1") {
+                if (bootCount >= 0 && flag == "boot:$bootCount") {
                     return true
                 }
             } catch (t: Throwable) {
@@ -75,14 +86,14 @@ object ConfigManager {
     }
 
     fun isSelfHooked(): Boolean {
-        return false
+        return selfHookFallback
     }
 
     fun isGlobalEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_GLOBAL_ENABLED, true)
     }
 
-    fun setGlobalEnabled(context: Context, enabled: Boolean) {
+    fun setGlobalEnabled(context: Context, enabled: Boolean) = synchronized(configLock) {
         getPrefs(context).edit().putBoolean(KEY_GLOBAL_ENABLED, enabled).apply()
         notifyHook(context)
     }
@@ -91,7 +102,7 @@ object ConfigManager {
         return getPrefs(context).getString(KEY_DEFAULT_IME, "") ?: ""
     }
 
-    fun setDefaultIme(context: Context, imeId: String) {
+    fun setDefaultIme(context: Context, imeId: String) = synchronized(configLock) {
         getPrefs(context).edit().putString(KEY_DEFAULT_IME, imeId).apply()
         notifyHook(context)
     }
@@ -105,10 +116,10 @@ object ConfigManager {
     }
 
     fun isAggressiveRecheck(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_AGGRESSIVE_RECHECK, true)
+        return getPrefs(context).getBoolean(KEY_AGGRESSIVE_RECHECK, false)
     }
 
-    fun setAggressiveRecheck(context: Context, recheck: Boolean) {
+    fun setAggressiveRecheck(context: Context, recheck: Boolean) = synchronized(configLock) {
         getPrefs(context).edit().putBoolean(KEY_AGGRESSIVE_RECHECK, recheck).apply()
         notifyHook(context)
     }
@@ -216,8 +227,14 @@ object ConfigManager {
         return getPrefs(context).getStringSet(KEY_KNOWN_IME_PACKAGES, emptySet()) ?: emptySet()
     }
 
-    fun setKnownImePackages(context: Context, packages: Set<String>) {
-        getPrefs(context).edit().putStringSet(KEY_KNOWN_IME_PACKAGES, packages).apply()
+    fun setKnownImePackages(context: Context, packages: Set<String>, syncNow: Boolean = true) = synchronized(configLock) {
+        val current = getKnownImePackages(context).toSet()
+        if (current != packages) {
+            getPrefs(context).edit().putStringSet(KEY_KNOWN_IME_PACKAGES, packages.toSet()).apply()
+            if (syncNow) {
+                notifyHook(context)
+            }
+        }
     }
 
     fun buildFullConfigJson(context: Context): String {
@@ -245,36 +262,36 @@ object ConfigManager {
             val map = json.decodeFromString<Map<String, String>>(configJson)
             val editor = getPrefs(context).edit()
 
-            map[KEY_GLOBAL_ENABLED]?.let { editor.putBoolean(KEY_GLOBAL_ENABLED, it.toBoolean()) }
-            map[KEY_DEFAULT_IME]?.let { editor.putString(KEY_DEFAULT_IME, it) }
-            map[KEY_AGGRESSIVE_RECHECK]?.let { editor.putBoolean(KEY_AGGRESSIVE_RECHECK, it.toBoolean()) }
+            editor.putBoolean(KEY_GLOBAL_ENABLED, map[KEY_GLOBAL_ENABLED]?.toBoolean() ?: true)
+            editor.putString(KEY_DEFAULT_IME, map[KEY_DEFAULT_IME] ?: "")
+            editor.putBoolean(KEY_AGGRESSIVE_RECHECK, map[KEY_AGGRESSIVE_RECHECK]?.toBoolean() ?: false)
 
-            val groupsList = try {
+            val groupsList = runCatching {
                 map[KEY_GROUPS]?.let { json.decodeFromString<List<ImeGroup>>(it) }
-            } catch (e: Exception) { null }
+            }.getOrNull() ?: emptyList()
 
-            val rulesMap = try {
+            val rulesMap = runCatching {
                 map[KEY_APP_RULES]?.let { json.decodeFromString<Map<String, String>>(it) }
-            } catch (e: Exception) { null }
+            }.getOrNull() ?: emptyMap()
 
-            if (rulesMap != null && groupsList != null) {
-                val groupIds = groupsList.map { it.id }.toSet()
-                // Clean dangling group references
-                val cleanedRules = rulesMap.filterValues { rule ->
-                    if (rule.startsWith(PREFIX_GROUP)) {
-                        val gId = rule.removePrefix(PREFIX_GROUP)
-                        groupIds.contains(gId)
-                    } else true
+            val groupIds = groupsList.map { it.id }.toSet()
+            val cleanedRules = rulesMap.filterValues { rule ->
+                if (rule.startsWith(PREFIX_GROUP)) {
+                    val gId = rule.removePrefix(PREFIX_GROUP)
+                    groupIds.contains(gId)
+                } else {
+                    true
                 }
-                editor.putString(KEY_APP_RULES, json.encodeToString(cleanedRules))
-            } else {
-                map[KEY_APP_RULES]?.let { editor.putString(KEY_APP_RULES, it) }
             }
+            editor.putString(KEY_APP_RULES, json.encodeToString(cleanedRules))
+            editor.putString(KEY_GROUPS, json.encodeToString(groupsList))
 
-            map[KEY_GROUPS]?.let { editor.putString(KEY_GROUPS, it) }
-            map[KEY_KNOWN_IME_PACKAGES]?.let {
-                val list = json.decodeFromString<List<String>>(it)
-                editor.putStringSet(KEY_KNOWN_IME_PACKAGES, list.toSet())
+            map[KEY_KNOWN_IME_PACKAGES]?.let { rawKnown ->
+                runCatching {
+                    json.decodeFromString<List<String>>(rawKnown).toSet()
+                }.getOrNull()?.let { knownSet ->
+                    editor.putStringSet(KEY_KNOWN_IME_PACKAGES, knownSet)
+                }
             }
 
             editor.apply()
@@ -287,58 +304,81 @@ object ConfigManager {
     }
 
     fun notifyHook(context: Context) {
-        val fullJson = buildFullConfigJson(context)
+        val appContext = context.applicationContext ?: context
+        val fullJson: String
+        val globalEnabled: Boolean
+        val defaultIme: String
+        val aggressiveRecheck: Boolean
+        val appRulesJson: String
+        val groupsJson: String
 
-        // 1. Direct Settings.Global write
-        var wroteGlobal = false
-        try {
-            wroteGlobal = Settings.Global.putString(context.contentResolver, SETTINGS_CONFIG_KEY, fullJson)
-        } catch (t: Throwable) {
-            Log.w("ConfigManager", "Settings.Global direct write deferred: ${t.message}")
-        }
+        synchronized(configLock) {
+            fullJson = buildFullConfigJson(appContext)
+            globalEnabled = isGlobalEnabled(appContext)
+            defaultIme = getDefaultIme(appContext)
+            aggressiveRecheck = isAggressiveRecheck(appContext)
+            appRulesJson = getPrefs(appContext).getString(KEY_APP_RULES, "{}") ?: "{}"
+            groupsJson = json.encodeToString(getGroups(appContext))
 
-        // 2. Targeted system broadcast
-        try {
-            val systemIntent = Intent(ACTION_SYNC_CONFIG).apply {
-                setPackage("android")
-                putExtra(KEY_GLOBAL_ENABLED, isGlobalEnabled(context))
-                putExtra(KEY_DEFAULT_IME, getDefaultIme(context))
-                putExtra(KEY_AGGRESSIVE_RECHECK, isAggressiveRecheck(context))
-                putExtra(KEY_APP_RULES, getPrefs(context).getString(KEY_APP_RULES, "{}"))
-                putExtra(KEY_GROUPS, json.encodeToString(getGroups(context)))
-                putExtra(SETTINGS_CONFIG_KEY, fullJson)
-            }
-            context.sendBroadcast(systemIntent)
-        } catch (t: Throwable) {
-            Log.w("ConfigManager", "Broadcast deferred: ${t.message}")
-        }
-
-        // 3. Root background sync (queued sequentially, atomic write & SELinux restorecon)
-        rootSyncExecutor.execute {
-            var proc: Process? = null
-            try {
-                val b64 = Base64.encodeToString(fullJson.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
-                proc = Runtime.getRuntime().exec("su")
-                proc.outputStream.bufferedWriter().use { writer ->
-                    writer.write("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1\n")
-                    writer.write("settings put global $SETTINGS_CONFIG_KEY \"$(echo '$b64' | base64 -d)\" >/dev/null 2>&1\n")
-                    writer.write("echo \"$b64\" | base64 -d > $SYSTEM_CONFIG_PATH.tmp && mv -f $SYSTEM_CONFIG_PATH.tmp $SYSTEM_CONFIG_PATH\n")
-                    writer.write("chmod 644 $SYSTEM_CONFIG_PATH >/dev/null 2>&1\n")
-                    writer.write("restorecon $SYSTEM_CONFIG_PATH >/dev/null 2>&1 || true\n")
-                    writer.write("exit\n")
-                    writer.flush()
-                }
-                val finished = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                if (!finished) {
-                    proc.destroyForcibly()
-                }
-            } catch (ignored: Throwable) {
-                proc?.destroyForcibly()
-            } finally {
+            // Queue root sync inside configLock so sequential mutations never reorder writes
+            rootSyncExecutor.execute {
+                var wroteGlobal = false
                 try {
-                    proc?.inputStream?.close()
-                    proc?.errorStream?.close()
-                } catch (ignored: Throwable) {}
+                    wroteGlobal = Settings.Global.putString(appContext.contentResolver, SETTINGS_CONFIG_KEY, fullJson)
+                } catch (t: Throwable) {
+                    Log.w("ConfigManager", "Settings.Global direct write deferred: ${t.message}")
+                }
+
+                // Targeted system broadcast
+                try {
+                    val systemIntent = Intent(ACTION_SYNC_CONFIG).apply {
+                        setPackage("android")
+                        putExtra(KEY_GLOBAL_ENABLED, globalEnabled)
+                        putExtra(KEY_DEFAULT_IME, defaultIme)
+                        putExtra(KEY_AGGRESSIVE_RECHECK, aggressiveRecheck)
+                        putExtra(KEY_APP_RULES, appRulesJson)
+                        putExtra(KEY_GROUPS, groupsJson)
+                        putExtra(SETTINGS_CONFIG_KEY, fullJson)
+                    }
+                    appContext.sendBroadcast(systemIntent)
+                } catch (t: Throwable) {
+                    Log.w("ConfigManager", "Broadcast deferred: ${t.message}")
+                }
+
+                var proc: Process? = null
+                try {
+                    val b64 = Base64.encodeToString(fullJson.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
+                    proc = Runtime.getRuntime().exec("su")
+                    proc.outputStream.bufferedWriter().use { writer ->
+                        if (!wroteGlobal) {
+                            writer.write("pm grant ${appContext.packageName} android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1\n")
+                        }
+                        writer.write("echo '$b64' | base64 -d > $SYSTEM_CONFIG_PATH.tmp && mv -f $SYSTEM_CONFIG_PATH.tmp $SYSTEM_CONFIG_PATH\n")
+                        writer.write("chmod 644 $SYSTEM_CONFIG_PATH >/dev/null 2>&1\n")
+                        writer.write("restorecon $SYSTEM_CONFIG_PATH >/dev/null 2>&1 || true\n")
+                        writer.write("exit\n")
+                        writer.flush()
+                    }
+                    val finished = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                    if (!finished) {
+                        proc.destroyForcibly()
+                    }
+                } catch (ignored: Throwable) {
+                    proc?.destroyForcibly()
+                } finally {
+                    try {
+                        proc?.inputStream?.close()
+                        proc?.errorStream?.close()
+                    } catch (ignored: Throwable) {}
+                }
+
+                if (!wroteGlobal) {
+                    try {
+                        Settings.Global.putString(appContext.contentResolver, SETTINGS_CONFIG_KEY, fullJson)
+                    } catch (t: Throwable) {
+                        Log.w("ConfigManager", "Settings.Global retry failed: ${t.message}")
+                    }
+                }
             }
         }
     }

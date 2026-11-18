@@ -35,6 +35,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.marukon.imeauto.BuildConfig
 import io.github.marukon.imeauto.R
 
 @Composable
@@ -64,7 +65,7 @@ fun AboutDialog(
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = "版本 v1.1.0 (LSPosed API 102)",
+                        text = "版本 v${BuildConfig.VERSION_NAME} (LSPosed API 102)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )

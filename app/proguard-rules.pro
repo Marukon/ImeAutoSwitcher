@@ -16,6 +16,9 @@
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 -keep class io.github.marukon.imeauto.data.** { *; }
 -keepclassmembers class io.github.marukon.imeauto.data.** { *; }
+-keepclassmembers class io.github.marukon.imeauto.data.ConfigManager {
+    public boolean isSelfHooked();
+}
 -keep @kotlinx.serialization.Serializable class * { *; }
 -keepclassmembers class * {
     public static final *** Companion;
