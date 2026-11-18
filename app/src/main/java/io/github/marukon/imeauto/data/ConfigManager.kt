@@ -1,5 +1,6 @@
 package io.github.marukon.imeauto.data
 
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -18,6 +19,7 @@ import java.util.concurrent.Executors
 
 object ConfigManager {
     const val ACTION_SYNC_CONFIG = "io.github.marukon.imeauto.ACTION_SYNC_CONFIG"
+    const val EXTRA_SENDER_TOKEN = "sender_token"
     private const val PREFS_NAME = "ime_auto_config"
     const val ACTIVE_FLAG_KEY = "io_github_marukon_imeauto_active"
     const val SETTINGS_CONFIG_KEY = "io_github_marukon_imeauto_config"
@@ -329,22 +331,6 @@ object ConfigManager {
                     Log.w("ConfigManager", "Settings.Global direct write deferred: ${t.message}")
                 }
 
-                // Targeted system broadcast
-                try {
-                    val systemIntent = Intent(ACTION_SYNC_CONFIG).apply {
-                        setPackage("android")
-                        putExtra(KEY_GLOBAL_ENABLED, globalEnabled)
-                        putExtra(KEY_DEFAULT_IME, defaultIme)
-                        putExtra(KEY_AGGRESSIVE_RECHECK, aggressiveRecheck)
-                        putExtra(KEY_APP_RULES, appRulesJson)
-                        putExtra(KEY_GROUPS, groupsJson)
-                        putExtra(SETTINGS_CONFIG_KEY, fullJson)
-                    }
-                    appContext.sendBroadcast(systemIntent)
-                } catch (t: Throwable) {
-                    Log.w("ConfigManager", "Broadcast deferred: ${t.message}")
-                }
-
                 var proc: Process? = null
                 try {
                     val b64 = Base64.encodeToString(fullJson.toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
@@ -378,6 +364,29 @@ object ConfigManager {
                     } catch (t: Throwable) {
                         Log.w("ConfigManager", "Settings.Global retry failed: ${t.message}")
                     }
+                }
+
+                // Targeted system broadcast with system-signed PendingIntent sender token & permission gate
+                try {
+                    val senderToken = PendingIntent.getBroadcast(
+                        appContext,
+                        0,
+                        Intent("io.github.marukon.imeauto.SENDER_TOKEN"),
+                        PendingIntent.FLAG_IMMUTABLE
+                    )
+                    val systemIntent = Intent(ACTION_SYNC_CONFIG).apply {
+                        setPackage("android")
+                        putExtra(EXTRA_SENDER_TOKEN, senderToken)
+                        putExtra(KEY_GLOBAL_ENABLED, globalEnabled)
+                        putExtra(KEY_DEFAULT_IME, defaultIme)
+                        putExtra(KEY_AGGRESSIVE_RECHECK, aggressiveRecheck)
+                        putExtra(KEY_APP_RULES, appRulesJson)
+                        putExtra(KEY_GROUPS, groupsJson)
+                        putExtra(SETTINGS_CONFIG_KEY, fullJson)
+                    }
+                    appContext.sendBroadcast(systemIntent, android.Manifest.permission.WRITE_SECURE_SETTINGS)
+                } catch (t: Throwable) {
+                    Log.w("ConfigManager", "Broadcast deferred: ${t.message}")
                 }
             }
         }

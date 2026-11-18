@@ -1,5 +1,6 @@
 package io.github.marukon.imeauto.hook
 
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -31,8 +32,10 @@ import java.util.concurrent.atomic.AtomicLong
 object SystemServerHook {
 
     private const val ACTIVE_FLAG_KEY = "io_github_marukon_imeauto_active"
+    private const val MODULE_PACKAGE = "io.github.marukon.imeauto"
     private const val ACTION_USER_SWITCHED = "android.intent.action.USER_SWITCHED"
     private const val EXTRA_USER_HANDLE = "android.intent.extra.user_handle"
+    private const val PER_USER_RANGE = 100000
 
     private val TRANSIENT_SYSTEM_PACKAGES = setOf(
         "android",
@@ -494,45 +497,102 @@ object SystemServerHook {
         }
     }
 
+    private fun isAuthorizedSyncBroadcast(context: Context, receiver: BroadcastReceiver, intent: Intent): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val sentPkg = runCatching { receiver.sentFromPackage }.getOrNull()
+            if (!sentPkg.isNullOrEmpty() && sentPkg != MODULE_PACKAGE && sentPkg != "android") {
+                HookUtils.log("Rejected ACTION_SYNC_CONFIG from unexpected package: $sentPkg")
+                return false
+            }
+        }
+
+        val token = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(ConfigManager.EXTRA_SENDER_TOKEN, PendingIntent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(ConfigManager.EXTRA_SENDER_TOKEN)
+        }
+        if (token == null || token.creatorPackage != MODULE_PACKAGE) {
+            HookUtils.log("Rejected ACTION_SYNC_CONFIG missing valid module sender token (creator=${token?.creatorPackage})")
+            return false
+        }
+
+        return try {
+            val expectedAppId = context.packageManager.getApplicationInfo(MODULE_PACKAGE, 0).uid % PER_USER_RANGE
+            val tokenAppId = token.creatorUid % PER_USER_RANGE
+            val matches = tokenAppId == expectedAppId
+            if (!matches) {
+                HookUtils.log("Rejected ACTION_SYNC_CONFIG due to UID mismatch: $tokenAppId != $expectedAppId")
+            }
+            matches
+        } catch (t: Throwable) {
+            HookUtils.log("Rejected ACTION_SYNC_CONFIG while verifying module UID: ${t.message}")
+            false
+        }
+    }
+
     private fun registerConfigReceiver(context: Context) {
         try {
-            val filter = IntentFilter().apply {
-                addAction(ConfigManager.ACTION_SYNC_CONFIG)
-                addAction(ACTION_USER_SWITCHED)
-            }
-            val receiver = object : BroadcastReceiver() {
+            // 1. Internal system_server user switch broadcast (not exported to third-party apps)
+            val userSwitchFilter = IntentFilter(ACTION_USER_SWITCHED)
+            val userSwitchReceiver = object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
-                    if (intent == null) return
+                    if (intent?.action != ACTION_USER_SWITCHED) return
                     try {
-                        when (intent.action) {
-                            ACTION_USER_SWITCHED -> {
-                                val newUserId = intent.getIntExtra(EXTRA_USER_HANDLE, 0)
-                                HookUtils.log("User switched to $newUserId")
-                                synchronized(stateLock) {
-                                    currentUserId = newUserId
-                                    currentForegroundPackage = null
-                                }
-                                switchExecutor.execute { ensureConfigAndReceiver() }
-                            }
-                            ConfigManager.ACTION_SYNC_CONFIG -> {
-                                if (intent.hasExtra(ConfigManager.SETTINGS_CONFIG_KEY) || intent.hasExtra(ConfigManager.KEY_APP_RULES)) {
-                                    applyConfigFromIntent(intent, context)
-                                }
-                            }
+                        val newUserId = intent.getIntExtra(EXTRA_USER_HANDLE, 0)
+                        HookUtils.log("User switched to $newUserId")
+                        synchronized(stateLock) {
+                            currentUserId = newUserId
+                            currentForegroundPackage = null
+                        }
+                        switchExecutor.execute { ensureConfigAndReceiver() }
+                    } catch (t: Throwable) {
+                        HookUtils.logE("Error processing USER_SWITCHED broadcast", t)
+                    }
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(userSwitchReceiver, userSwitchFilter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                context.registerReceiver(userSwitchReceiver, userSwitchFilter)
+            }
+
+            // 2. Module config sync broadcast gated by WRITE_SECURE_SETTINGS + PendingIntent sender token
+            val syncFilter = IntentFilter(ConfigManager.ACTION_SYNC_CONFIG)
+            val syncReceiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) {
+                    if (intent?.action != ConfigManager.ACTION_SYNC_CONFIG) return
+                    try {
+                        if (!isAuthorizedSyncBroadcast(context, this, intent)) {
+                            return
+                        }
+                        if (intent.hasExtra(ConfigManager.SETTINGS_CONFIG_KEY) || intent.hasExtra(ConfigManager.KEY_APP_RULES)) {
+                            applyConfigFromIntent(intent, context)
                         }
                     } catch (t: Throwable) {
-                        HookUtils.logE("Error processing broadcast: ${intent.action}", t)
+                        HookUtils.logE("Error processing ACTION_SYNC_CONFIG broadcast", t)
                     }
                 }
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+                context.registerReceiver(
+                    syncReceiver,
+                    syncFilter,
+                    android.Manifest.permission.WRITE_SECURE_SETTINGS,
+                    null,
+                    Context.RECEIVER_EXPORTED
+                )
             } else {
-                context.registerReceiver(receiver, filter)
+                context.registerReceiver(
+                    syncReceiver,
+                    syncFilter,
+                    android.Manifest.permission.WRITE_SECURE_SETTINGS,
+                    null
+                )
             }
             isReceiverRegistered = true
-            HookUtils.log("Registered ACTION_SYNC_CONFIG and ACTION_USER_SWITCHED receiver")
+            HookUtils.log("Registered authenticated ACTION_SYNC_CONFIG and internal ACTION_USER_SWITCHED receivers")
         } catch (t: Throwable) {
             HookUtils.log("registerConfigReceiver deferred: ${t.message}")
         }
@@ -614,7 +674,7 @@ object SystemServerHook {
                 val item = groupsArr.getJSONObject(i)
                 val id = item.optString("id")
                 val ime = item.optString("targetImeId")
-                if (id.isNotEmpty()) {
+                if (id.isNotEmpty() && (ime == ConfigManager.RULE_KEEP_CURRENT || isValidImeId(ime))) {
                     newGroups[id] = ime
                 }
             }
@@ -622,6 +682,21 @@ object SystemServerHook {
         } catch (e: Throwable) {
             HookUtils.logE("Failed to parse groups JSON", e)
         }
+    }
+
+    private fun parseAppRulesObject(rulesObj: JSONObject): Map<String, String> {
+        val newRules = HashMap<String, String>()
+        for (key in rulesObj.keys()) {
+            if (key.isNullOrEmpty()) continue
+            val value = rulesObj.optString(key, "")
+            if (value == ConfigManager.RULE_KEEP_CURRENT ||
+                value.startsWith(ConfigManager.PREFIX_GROUP) ||
+                isValidImeId(value)
+            ) {
+                newRules[key] = value
+            }
+        }
+        return newRules
     }
 
     private fun loadConfigFromAllSources(context: Context) {
@@ -675,11 +750,7 @@ object SystemServerHook {
                     else -> null
                 }
                 if (rulesObj != null) {
-                    val newRules = HashMap<String, String>()
-                    for (key in rulesObj.keys()) {
-                        newRules[key] = rulesObj.getString(key)
-                    }
-                    appRules = newRules
+                    appRules = parseAppRulesObject(rulesObj)
                 }
             }
             if (root.has(ConfigManager.KEY_GROUPS)) {
@@ -723,12 +794,7 @@ object SystemServerHook {
             configuredDefaultIme = if (isValidImeId(ime)) ime else ""
             aggressiveRecheck = bundle.getBoolean(ConfigManager.KEY_AGGRESSIVE_RECHECK, false)
             bundle.getString(ConfigManager.KEY_APP_RULES)?.takeIf { it.isNotEmpty() }?.let { raw ->
-                val obj = JSONObject(raw)
-                val newRules = HashMap<String, String>()
-                for (key in obj.keys()) {
-                    newRules[key] = obj.getString(key)
-                }
-                appRules = newRules
+                appRules = parseAppRulesObject(JSONObject(raw))
             }
             bundle.getString(ConfigManager.KEY_GROUPS)?.takeIf { it.isNotEmpty() }?.let {
                 parseGroupsJson(it)
@@ -757,12 +823,7 @@ object SystemServerHook {
 
         intent.getStringExtra(ConfigManager.KEY_APP_RULES)?.takeIf { it.isNotEmpty() }?.let { rulesJson ->
             runCatching {
-                val obj = JSONObject(rulesJson)
-                val newRules = HashMap<String, String>()
-                for (key in obj.keys()) {
-                    newRules[key] = obj.getString(key)
-                }
-                appRules = newRules
+                appRules = parseAppRulesObject(JSONObject(rulesJson))
                 isConfigLoaded = true
             }.onFailure { HookUtils.logE("Failed to parse app rules JSON", it) }
         }
